@@ -1,0 +1,439 @@
+# Code Trace API 명세
+
+> **이 문서가 프론트·백엔드 간 유일한 계약이다** (CLAUDE.md §2).
+> 명세를 바꾸려면 코드보다 이 문서를 먼저 수정하고 프론트 담당에게 알린다.
+> 각 엔드포인트의 예시 JSON은 프론트가 목데이터로 그대로 복사해 사용한다.
+
+---
+
+## 0. 공통 규칙
+
+- 기본 URL: `{VITE_API_URL}/api/v1` (아래 경로는 전부 이 뒤에 붙는다)
+- 인증: `Authorization: Bearer <access_token>` 헤더. 🔓 표시된 것만 인증 불필요.
+- 날짜: ISO 8601 UTC (`2026-08-10T12:00:00Z`)
+- 에러 형식 (FastAPI 기본):
+  ```json
+  { "detail": "에러 메시지" }
+  ```
+  - `401` 토큰 없음·만료 → 프론트는 로그인 화면으로
+  - `403` 권한 없음 (데모 세션 차단, 관리자 전용, 플랜 한도)
+  - `404` 리소스 없음
+- **데모 세션**: `POST /auth/demo`로 발급받는 읽기 전용 토큰. 데모 조직의 organization_id로
+  일반 세션과 동일한 격리 규칙을 통과한다. 🚫데모 표시가 있는 엔드포인트는 데모 세션에서 `403`.
+- 역할: `admin` | `member` 2단계 (조직 생성자가 admin).
+
+### `GET /health` 🔓 (v1 밖, 루트 경로)
+
+배포 확인용. **응답 200** `{ "status": "ok" }`
+
+---
+
+## 1. 인증·조직
+
+### `POST /auth/signup` 🔓
+
+회원가입. 성공 시 바로 로그인 상태가 되며, `organization`이 `null`이면
+프론트는 조직 생성 화면으로 보낸다.
+
+**요청**
+```json
+{ "email": "kim@acme.dev", "password": "hunter22", "name": "김팀장" }
+```
+
+**응답 201**
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer",
+  "user": { "id": 1, "email": "kim@acme.dev", "name": "김팀장", "role": "admin" },
+  "organization": null
+}
+```
+
+- `409` 이미 가입된 이메일
+
+### `POST /auth/login` 🔓
+
+**요청**
+```json
+{ "email": "kim@acme.dev", "password": "hunter22" }
+```
+
+**응답 200**
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer",
+  "user": { "id": 1, "email": "kim@acme.dev", "name": "김팀장", "role": "admin" },
+  "organization": { "id": 1, "name": "에이크미", "slug": "acme-x1y2", "plan": "starter" }
+}
+```
+
+- `401` 이메일 또는 비밀번호 불일치
+
+### `POST /auth/demo` 🔓
+
+랜딩의 "데모 체험" CTA. 데모 조직의 읽기 전용 세션을 발급한다.
+
+**요청** 없음 · **응답 200**
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer",
+  "read_only": true,
+  "user": { "id": 0, "email": "demo@codetrace.app", "name": "데모 사용자", "role": "member" },
+  "organization": { "id": 99, "name": "Acme Corp (데모)", "slug": "demo", "plan": "team" }
+}
+```
+
+### `GET /auth/me`
+
+새로고침 시 세션 복원. **응답 200** — 로그인 응답과 동일 형태 (`access_token` 제외).
+
+### `POST /organizations` 🚫데모
+
+가입 직후 조직 생성. 조직 식별자(slug)가 발급된다. 사용자당 1개 (다중 소속 범위 외).
+
+**요청**
+```json
+{ "name": "에이크미" }
+```
+
+**응답 201**
+```json
+{ "id": 1, "name": "에이크미", "slug": "acme-x1y2", "plan": "starter" }
+```
+
+- `409` 이미 조직이 있는 사용자
+
+---
+
+## 2. 연동 설정 (GitHub App)
+
+### `GET /integrations`
+
+연동 설정 화면 카드 목록. GitHub 외 3개는 항상 `coming_soon` (클릭 차단).
+
+**응답 200**
+```json
+{
+  "github": { "status": "connected", "installation_id": 12345678, "account": "acme-corp" },
+  "gitlab": { "status": "coming_soon" },
+  "jira":   { "status": "coming_soon" },
+  "slack":  { "status": "coming_soon" }
+}
+```
+
+- `github.status`: `"not_connected"` | `"connected"`
+
+### `GET /integrations/github/install-url` 🚫데모
+
+GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
+설치 완료 후 GitHub이 백엔드 콜백으로 리다이렉트하며, 백엔드가 installation_id를
+저장하고 연동 설정 화면으로 돌려보낸다.
+
+**응답 200**
+```json
+{ "url": "https://github.com/apps/codetrace-app/installations/new" }
+```
+
+### `GET /integrations/github/repos` 🚫데모
+
+설치된 GitHub App이 접근 가능한 레포 목록. 인덱싱 대상 선택 UI(S-FWXUHO)에 사용.
+
+**응답 200**
+```json
+{
+  "repos": [
+    { "github_full_name": "acme-corp/acme-payment-service", "private": true,  "already_added": true },
+    { "github_full_name": "acme-corp/acme-admin-web",       "private": true,  "already_added": false }
+  ]
+}
+```
+
+- `409` GitHub App 미설치 상태
+
+---
+
+## 3. 레포·인덱싱
+
+### `GET /repos`
+
+대시보드 레포 카드 목록. **인덱싱 중(`collecting`/`parsing`)인 레포가 있을 때만
+프론트가 5초 간격 폴링**으로 갱신하고, 전부 `done`/`failed`면 폴링을 중단한다.
+
+**응답 200**
+```json
+{
+  "repos": [
+    {
+      "id": 1,
+      "name": "acme-payment-service",
+      "github_full_name": "acme-corp/acme-payment-service",
+      "default_branch": "main",
+      "indexing_status": "parsing",
+      "last_indexed_at": null,
+      "stats": { "files": 87, "functions": 342, "commits": 418, "prs": 96 }
+    },
+    {
+      "id": 2,
+      "name": "acme-admin-web",
+      "github_full_name": "acme-corp/acme-admin-web",
+      "default_branch": "main",
+      "indexing_status": "done",
+      "last_indexed_at": "2026-08-10T09:30:00Z",
+      "stats": { "files": 45, "functions": 120, "commits": 210, "prs": 41 }
+    }
+  ]
+}
+```
+
+- `indexing_status`: `"collecting"`(수집 중) → `"parsing"`(파싱 중) → `"done"`(완료) | `"failed"`
+- `failed`면 카드에 "재인덱싱" 버튼만 노출 (에러 화면 금지 — CLAUDE.md UI 규칙)
+- `stats`는 `done` 이전엔 수집된 만큼만 (0일 수 있음)
+
+### `POST /repos` 🚫데모
+
+인덱싱 대상 레포 추가. **선택 즉시 인덱싱 시작** (S-FWXUHO).
+
+**요청**
+```json
+{ "github_full_name": "acme-corp/acme-payment-service" }
+```
+
+**응답 201** — `GET /repos`의 카드 1개와 동일 형태 (`indexing_status: "collecting"`)
+
+- `403` 플랜 레포 한도 초과 (`detail`에 "Starter 플랜은 3개까지..." 안내 문구)
+- `409` 이미 추가된 레포
+
+### `POST /repos/{repo_id}/reindex` 🚫데모
+
+수동 재인덱싱 (증분 아님, 전체 다시).
+
+**응답 202**
+```json
+{ "id": 1, "indexing_status": "collecting" }
+```
+
+- `409` 이미 인덱싱 진행 중
+
+---
+
+## 4. 코드 탐색기
+
+### `GET /repos/{repo_id}/tree`
+
+좌측 파일트리. 인덱싱된 default_branch 기준.
+
+**응답 200**
+```json
+{
+  "root": [
+    {
+      "path": "src", "name": "src", "type": "dir",
+      "children": [
+        { "path": "src/payment.py",  "name": "payment.py",  "type": "file", "language": "python" },
+        { "path": "src/constants.py","name": "constants.py","type": "file", "language": "python" }
+      ]
+    },
+    { "path": "README.md", "name": "README.md", "type": "file", "language": null }
+  ]
+}
+```
+
+- `language`: `"python"` | `"typescript"` | `"javascript"` | `null`(미지원 — 뷰어에서 하이라이트 없이 표시)
+- `409` 인덱싱 미완료 (`indexing_status`가 `done`이 아님)
+
+### `GET /repos/{repo_id}/file?path=src/payment.py`
+
+중앙 코드뷰어. 읽기 전용.
+
+**응답 200**
+```json
+{
+  "path": "src/payment.py",
+  "language": "python",
+  "content": "import httpx\n\nTIMEOUT_SECONDS = 10\n\ndef process_payment(order_id, amount, retry=3):\n    ...\n",
+  "truncated": false,
+  "functions": [
+    { "name": "process_payment", "start_line": 5, "end_line": 42 },
+    { "name": "refund_payment",  "start_line": 45, "end_line": 60 }
+  ]
+}
+```
+
+- `truncated: true`면 대용량 파일이 잘린 것 — 뷰어 하단에 "일부만 표시됨" 안내
+- `functions`는 파서가 추출한 함수 범위 — 클릭 시 함수 해석에 사용
+
+### `GET /repos/{repo_id}/context?path=src/payment.py&line=12`
+
+우측 탭1 "맥락". `line`이 걸친 **가장 가까운(가장 안쪽) 함수**로 해석한다 (S-ZEZFED).
+함수 밖(모듈 레벨)이면 파일 단위 맥락으로 응답.
+
+**응답 200 — 근거 있음 (`status: "ok"`)**
+```json
+{
+  "function": { "name": "process_payment", "path": "src/payment.py", "start_line": 5, "end_line": 42 },
+  "status": "ok",
+  "summary": "2024년 11월 PG사 타임아웃 장애(#PR 41) 이후 재시도 3회와 멱등키 검증이 추가된 함수. 2025년 6월 타임아웃이 3초에서 10초로 조정되었고, 현재는 모든 결제 요청이 이 함수를 단일 경로로 통과한다.",
+  "evidence": [
+    {
+      "kind": "commit",
+      "sha": "a1b2c3d",
+      "title": "fix: 결제 타임아웃 3s→10s 상향",
+      "author": "kimdev",
+      "date": "2025-06-14T02:11:00Z",
+      "url": "https://github.com/acme-corp/acme-payment-service/commit/a1b2c3d"
+    },
+    {
+      "kind": "pr",
+      "number": 41,
+      "title": "결제 재시도 로직 추가",
+      "date": "2024-11-02T08:00:00Z",
+      "url": "https://github.com/acme-corp/acme-payment-service/pull/41",
+      "review_excerpt": "재시도만 붙이면 중복 결제 위험이 있어요. 멱등키 검증이 먼저 필요합니다."
+    }
+  ],
+  "evidence_truncated": false,
+  "parent_module": null
+}
+```
+
+**응답 200 — 근거 없음 (`status: "no_history"`, S-UBXNLW)**
+```json
+{
+  "function": { "name": "format_krw", "path": "src/utils.py", "start_line": 3, "end_line": 6 },
+  "status": "no_history",
+  "summary": null,
+  "evidence": [],
+  "evidence_truncated": false,
+  "parent_module": { "path": "src", "name": "src" }
+}
+```
+
+- 프론트: "변경 이력 없음" 명시 + `parent_module`로 이동 경로 제공. 빈 화면 금지.
+
+**`status` 값**
+- `"ok"` 정상
+- `"no_history"` 근거 부족 — 추측 서술 금지, summary는 null
+- `"conflicting"` 근거 상충 — summary가 양쪽을 나란히 서술하고 evidence에 양쪽 모두 포함
+- 근거 과다 시 서버가 최근·주요 근거 위주로 잘라서 보내고 `evidence_truncated: true`
+
+### `GET /repos/{repo_id}/graph?path=src/payment.py&function=process_payment`
+
+우측 탭2 "영향 범위 그래프". **깊이 2 고정** (S-QGBSHN). 파서 결과만 사용 — 추측 없음.
+
+**응답 200**
+```json
+{
+  "root": { "id": "src/payment.py::process_payment", "name": "process_payment", "path": "src/payment.py", "kind": "function" },
+  "nodes": [
+    { "id": "src/api/checkout.py::checkout",        "name": "checkout",        "path": "src/api/checkout.py", "kind": "function", "depth": 1, "direction": "caller" },
+    { "id": "src/payment.py::TIMEOUT_SECONDS",      "name": "TIMEOUT_SECONDS", "path": "src/payment.py",      "kind": "constant", "depth": 1, "direction": "callee" },
+    { "id": "src/pg/client.py::PgClient.request",   "name": "PgClient.request","path": "src/pg/client.py",    "kind": "function", "depth": 1, "direction": "callee" },
+    { "id": "src/api/subscribe.py::renew",          "name": "renew",           "path": "src/api/subscribe.py","kind": "function", "depth": 2, "direction": "caller" }
+  ],
+  "edges": [
+    { "source": "src/api/checkout.py::checkout",  "target": "src/payment.py::process_payment",  "type": "call" },
+    { "source": "src/payment.py::process_payment","target": "src/payment.py::TIMEOUT_SECONDS",  "type": "constant" },
+    { "source": "src/payment.py::process_payment","target": "src/pg/client.py::PgClient.request","type": "call" },
+    { "source": "src/api/subscribe.py::renew",    "target": "src/api/checkout.py::checkout",    "type": "call" }
+  ],
+  "total_nodes": 4,
+  "truncated": false
+}
+```
+
+- 노드 `id` 규칙: `"파일경로::함수명"` (메서드는 `클래스.메서드`, 상수는 상수명)
+- `kind`: `"function"` | `"constant"` | `"class"`
+- `edge.type` (연결 유형 4가지, CLAUDE.md §4): `"call"` | `"import"` | `"constant"` | `"inheritance"`
+- `direction`: root 기준 `"caller"`(이 함수를 참조) | `"callee"`(이 함수가 참조)
+- 서버는 깊이 2까지 전부 반환 (상한 100노드, 초과 시 `truncated: true` — 그래프 하단에 "일부만 표시됨" 안내). **15개 초과 접기(S-TQFUEH)는 프론트 처리** — 방향별 15개까지 표시하고 나머지는 "더 보기".
+- 노드 클릭 → 코드뷰어 해당 위치 이동 + 맥락 탭 동기화 (프론트 동작, `path`·`id`로 충분)
+
+---
+
+## 5. 관리자 설정
+
+### `GET /admin/query-logs?page=1` 🚫데모 · admin 전용
+
+질의 이력 테이블. 90일 보존 후 자동 삭제.
+
+**응답 200**
+```json
+{
+  "items": [
+    {
+      "id": 132,
+      "user_name": "김신입",
+      "action": "context_view",
+      "repo": "acme-payment-service",
+      "target": "src/payment.py::process_payment",
+      "created_at": "2026-08-10T05:21:00Z"
+    },
+    {
+      "id": 131,
+      "user_name": "김신입",
+      "action": "graph_view",
+      "repo": "acme-payment-service",
+      "target": "src/payment.py::process_payment",
+      "created_at": "2026-08-10T05:20:12Z"
+    }
+  ],
+  "page": 1,
+  "per_page": 20,
+  "total": 132
+}
+```
+
+- `action`: `"context_view"` | `"graph_view"`
+- `403` member가 호출한 경우
+
+### `GET /admin/plan` 🚫데모 · admin 전용
+
+**응답 200**
+```json
+{ "plan": "starter", "price_krw": 50000, "repo_limit": 3, "repos_used": 1 }
+```
+
+---
+
+## 6. 구독 문의
+
+### `POST /inquiries` 🔓
+
+요금제 화면의 신청 = 문의 접수 (결제 연동 없음).
+
+**요청**
+```json
+{ "organization_name": "에이크미", "contact_name": "김팀장", "contact": "010-1234-5678", "plan": "team" }
+```
+
+**응답 201**
+```json
+{ "id": 7, "message": "문의가 접수되었습니다. 1영업일 내 연락드립니다." }
+```
+
+---
+
+## 7. GitHub 웹훅 (내부 계약 — 프론트 무관)
+
+### `POST /webhooks/github` 🔓(서명으로 검증)
+
+- 구독 이벤트: `pull_request` — `opened`, `synchronize`만 처리
+- `X-Hub-Signature-256` 서명 검증 필수. 불일치 시 `401`.
+- 처리: 변경 파일만 base/head 리비전에서 **즉시 재파싱**해 비교 (저장된 인덱스로 판별 금지)
+- 경고 코멘트의 웹 링크 규칙: `{FRONTEND_URL}/explorer?repo={repo_id}&path={path}&fn={function}`
+  (프론트는 이 쿼리 파라미터로 탐색기 진입 시 해당 함수를 바로 선택 상태로)
+- **응답 204** (본문 없음)
+
+---
+
+## 8. 확정된 판단 (2026-08-10)
+
+- `indexing_status`에 `failed` 포함 — 실패 시 카드가 "파싱 중"에 멈춰 보이는 것 방지.
+  카드에는 재인덱싱 버튼만 노출 (에러 화면 금지 규칙 준수).
+- 레포 삭제 API 없음 — 데모 세션은 읽기 전용이라 불필요. 팀 내부 실수는 DB에서 직접 정리.
+  필요해지면 이 문서에 먼저 추가한 뒤 구현.
+- 폴링 5초, 인덱싱 중인 레포가 있을 때만.
+- 그래프 서버 상한 100노드 + `truncated` 플래그. 데모 레포는 100노드를 넘지 않게 설계.

@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 서버 기동 스모크 (/health)
+        run: |
+          python -c "from fastapi.testclient import TestClient; from src.main import app; r = TestClient(app).get('/health'); assert r.status_code == 200, r.status_code"
+
+      - name: 테스트 실행 (없으면 통과)
+        run: |
+          pip install pytest
+          pytest -q || [ $? -eq 5 ]
