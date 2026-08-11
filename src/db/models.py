@@ -147,9 +147,13 @@ class Symbol(OrgScopedMixin, Base):
 
 
 class Reference(OrgScopedMixin, Base):
-    """심볼 간 연결. 추적 유형 4가지만 저장한다."""
+    """심볼 간 연결. 추적 유형 4가지만 저장한다.
 
-    __tablename__ = "references"
+    테이블명이 symbol_references인 이유: references는 SQL 예약어라
+    psql에서 따옴표 없이 조회하면 문법 오류가 난다.
+    """
+
+    __tablename__ = "symbol_references"
     __table_args__ = (
         Index("ix_reference_target", "repo_id", "target_ident"),
         Index("ix_reference_source", "repo_id", "source_ident"),

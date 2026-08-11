@@ -14,6 +14,8 @@
 
 import sys
 
+from sqlalchemy import text
+
 from src.db import models  # noqa: F401  (모델을 metadata에 등록하기 위한 import)
 from src.db.session import Base, engine
 
@@ -23,7 +25,18 @@ def create_tables() -> None:
 
 
 def reset_tables() -> None:
-    Base.metadata.drop_all(bind=engine)
+    """스키마를 통째로 비우고 다시 만든다.
+
+    drop_all은 현재 모델에 있는 테이블만 지운다. 테이블 이름을 바꾸거나 모델을
+    삭제하면 옛 테이블이 DB에 남아 다른 테이블의 삭제를 막는다.
+    그래서 스키마 단위로 지운다.
+    """
+    with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        else:
+            Base.metadata.drop_all(bind=conn)
     Base.metadata.create_all(bind=engine)
 
 
