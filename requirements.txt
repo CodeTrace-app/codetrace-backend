@@ -3,7 +3,8 @@ uvicorn[standard]
 sqlalchemy
 psycopg[binary]
 pydantic-settings
-pyjwt
+# GitHub App은 RS256으로 서명하므로 cryptography가 함께 필요하다
+pyjwt[crypto]
 passlib[bcrypt]
 bcrypt<4.1
 httpx
