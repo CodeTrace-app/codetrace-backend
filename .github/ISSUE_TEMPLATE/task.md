@@ -13,9 +13,9 @@ labels: ["task"]
 
 <!-- 작업 전에 반드시 읽을 것. 해당 없는 줄은 지우기 -->
 
-- CLAUDE.md §
 - docs/api-spec.md §
 - Manyfast ID:
+- 참고 링크:
 
 ## ✅ 작업 내용
 
