@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: codetrace-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: codetrace-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      # 아래 값들은 Render 대시보드에서 직접 입력한다 (레포에 남기지 않는다)
+      - key: CORS_ORIGINS
+        sync: false
+      - key: LLM_PROVIDER
+        value: openai
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_ORG_ID
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+
+databases:
+  - name: codetrace-db
+    plan: free
+    region: singapore
