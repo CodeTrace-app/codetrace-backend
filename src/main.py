@@ -1,9 +1,21 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import settings
+from src.db.init import create_tables
 
-app = FastAPI(title="Code Trace API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 없는 테이블만 생성한다. 컬럼 변경은 반영되지 않으므로
+    # 모델을 고쳤으면 `python -m src.db.init --reset`으로 리셋한다.
+    create_tables()
+    yield
+
+
+app = FastAPI(title="Code Trace API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
