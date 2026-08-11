@@ -7,6 +7,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://codetrace:codetrace@localhost:5432/codetrace"
     cors_origins: str = "http://localhost:5173"
+    # 프리뷰 배포 주소는 배포마다 달라져 고정 목록으로 감당할 수 없다.
+    cors_origin_regex: str = r"https://codetrace-frontend(-[a-z0-9-]+)?\.vercel\.app"
     secret_key: str = "change_me"
 
     llm_provider: str = "openai"
