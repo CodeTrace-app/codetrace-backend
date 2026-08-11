@@ -1,4 +1,4 @@
-# Code Trace API 명세
+﻿# Code Trace API 명세
 
 > **이 문서가 프론트·백엔드 간 유일한 계약이다** (CLAUDE.md §2).
 > 명세를 바꾸려면 코드보다 이 문서를 먼저 수정하고 프론트 담당에게 알린다.
@@ -117,7 +117,7 @@
 **응답 200**
 ```json
 {
-  "github": { "status": "connected", "installation_id": 12345678, "account": "acme-corp" },
+  "github": { "status": "connected", "installation_id": 12345678, "account": "acme-payments" },
   "gitlab": { "status": "coming_soon" },
   "jira":   { "status": "coming_soon" },
   "slack":  { "status": "coming_soon" }
@@ -145,8 +145,8 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 ```json
 {
   "repos": [
-    { "github_full_name": "acme-corp/acme-payment-service", "private": true,  "already_added": true },
-    { "github_full_name": "acme-corp/acme-admin-web",       "private": true,  "already_added": false }
+    { "github_full_name": "acme-payments/acme-payment-service", "private": true,  "already_added": true },
+    { "github_full_name": "acme-payments/acme-admin-web",       "private": true,  "already_added": false }
   ]
 }
 ```
@@ -166,7 +166,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 ```json
 {
   "summary": {
-    "github_account": "acme-corp",
+    "github_account": "acme-payments",
     "github_connected": true,
     "repo_count": 4,
     "commit_count": 1284,
@@ -177,7 +177,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
     {
       "id": 1,
       "name": "acme-payment-service",
-      "github_full_name": "acme-corp/acme-payment-service",
+      "github_full_name": "acme-payments/acme-payment-service",
       "default_branch": "main",
       "language": "Python",
       "indexing_status": "parsing",
@@ -188,7 +188,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
     {
       "id": 2,
       "name": "acme-admin-web",
-      "github_full_name": "acme-corp/acme-admin-web",
+      "github_full_name": "acme-payments/acme-admin-web",
       "default_branch": "main",
       "language": "TypeScript",
       "indexing_status": "done",
@@ -216,7 +216,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 **요청**
 ```json
-{ "github_full_name": "acme-corp/acme-payment-service" }
+{ "github_full_name": "acme-payments/acme-payment-service" }
 ```
 
 **응답 201** — `GET /repos`의 카드 1개와 동일 형태 (`indexing_status: "collecting"`)
@@ -301,14 +301,14 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
       "title": "fix: 결제 타임아웃 3s→10s 상향",
       "author": "kimdev",
       "date": "2025-06-14T02:11:00Z",
-      "url": "https://github.com/acme-corp/acme-payment-service/commit/a1b2c3d"
+      "url": "https://github.com/acme-payments/acme-payment-service/commit/a1b2c3d"
     },
     {
       "kind": "pr",
       "number": 41,
       "title": "결제 재시도 로직 추가",
       "date": "2024-11-02T08:00:00Z",
-      "url": "https://github.com/acme-corp/acme-payment-service/pull/41",
+      "url": "https://github.com/acme-payments/acme-payment-service/pull/41",
       "review_excerpt": "재시도만 붙이면 중복 결제 위험이 있어요. 멱등키 검증이 먼저 필요합니다."
     }
   ],
@@ -392,7 +392,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
       "repo": "acme-payment-service",
       "pr_number": 132,
       "pr_title": "결제 타임아웃 설정 변경",
-      "pr_url": "https://github.com/acme-corp/acme-payment-service/pull/132",
+      "pr_url": "https://github.com/acme-payments/acme-payment-service/pull/132",
       "author": "kimnewbie",
       "created_at": "2026-08-10T04:12:00Z",
       "warnings": [
