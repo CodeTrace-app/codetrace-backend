@@ -9,7 +9,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     # 프리뷰 배포 주소는 배포마다 달라져 고정 목록으로 감당할 수 없다.
     cors_origin_regex: str = r"https://codetrace-frontend(-[a-z0-9-]+)?\.vercel\.app"
-    secret_key: str = "change_me"
+    # 배포 환경에서는 반드시 환경변수로 덮어쓴다 (Render는 자동 생성값을 주입한다).
+    secret_key: str = "local-development-secret-key-change-in-production"
 
     llm_provider: str = "openai"
     llm_api_key: str = ""
