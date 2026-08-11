@@ -16,6 +16,8 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
+# 외부 모니터링 도구는 본문 없이 상태만 확인하려고 HEAD를 먼저 보낸다.
+# GET만 등록하면 405가 반환되어 장애로 오인된다.
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health() -> dict[str, str]:
     return {"status": "ok"}
