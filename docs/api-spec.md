@@ -165,13 +165,23 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 **응답 200**
 ```json
 {
+  "summary": {
+    "github_account": "acme-corp",
+    "github_connected": true,
+    "repo_count": 4,
+    "commit_count": 1284,
+    "review_comment_count": 342,
+    "last_indexed_at": "2026-08-10T09:30:00Z"
+  },
   "repos": [
     {
       "id": 1,
       "name": "acme-payment-service",
       "github_full_name": "acme-corp/acme-payment-service",
       "default_branch": "main",
+      "language": "Python",
       "indexing_status": "parsing",
+      "progress": { "current": 142, "total": 218 },
       "last_indexed_at": null,
       "stats": { "files": 87, "functions": 342, "commits": 418, "prs": 96 }
     },
@@ -180,7 +190,9 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
       "name": "acme-admin-web",
       "github_full_name": "acme-corp/acme-admin-web",
       "default_branch": "main",
+      "language": "TypeScript",
       "indexing_status": "done",
+      "progress": null,
       "last_indexed_at": "2026-08-10T09:30:00Z",
       "stats": { "files": 45, "functions": 120, "commits": 210, "prs": 41 }
     }
@@ -188,9 +200,15 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 }
 ```
 
+- `summary`는 대시보드 상단 카드 3개(연동 계정 / 인덱싱된 레포 / 수집된 커밋)에 쓴다.
 - `indexing_status`: `"collecting"`(수집 중) → `"parsing"`(파싱 중) → `"done"`(완료) | `"failed"`
-- `failed`면 카드에 "재인덱싱" 버튼만 노출 (에러 화면 금지 — CLAUDE.md UI 규칙)
+- `progress`: 진행 중일 때만 값이 있고 `done`·`failed`면 `null`.
+  화면 표기는 `collecting`이면 "수집 중 · 커밋 142 / 218", `parsing`이면 "파싱 · 65%"
+  (퍼센트는 프론트가 `current/total`로 계산한다)
+- `language`: 레포의 대표 언어. 표시용 문자열이며 지원 언어 판별과는 무관하다.
+- `failed`면 카드에 "재인덱싱" 버튼만 노출 (에러 화면을 띄우지 않는다)
 - `stats`는 `done` 이전엔 수집된 만큼만 (0일 수 있음)
+- "최근 인덱싱 결과" 영역은 별도 API가 아니라 이 목록을 `last_indexed_at` 내림차순으로 추려서 쓴다.
 
 ### `POST /repos` 🚫데모
 
@@ -351,8 +369,8 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 - `direction`: root 기준 `"caller"`(이 함수를 참조) | `"callee"`(이 함수가 참조)
 - `reference_count`: 그 심볼이 레포 전체에서 참조되는 횟수.
   **15개 초과 시 이 값 내림차순으로 정렬한 뒤 접는다**(S-TQFUEH). 노드에도 이 숫자를 표기한다.
-- 서버는 깊이 2까지 전부 반환 (상한 100노드, 초과 시 `truncated: true` — 그래프 하단에 "일부만 표시됨" 안내). **15개 초과 접기는 프론트 처리** — 방향별 15개까지 표시하고 나머지는 "더 보기 · N곳 접힘".
-- 렌더링은 react-flow + dagre, **위→아래 세로 계층 고정**. 자유 배치(force-directed) 금지.
+- 서버는 깊이 2까지 전부 반환 (상한 100노드, 초과 시 `truncated: true` — 그래프 하단에 "일부만 표시됨" 안내). **15개 초과 접기는 프론트 처리** — 15개까지 표시하고 나머지는 "더 보기 · N곳 접힘".
+- 렌더링은 **위→아래 세로 계층 카드 리스트**(CSS). 그래프 라이브러리를 쓰지 않는다.
 - 노드 클릭 → 코드뷰어 해당 위치 이동 + 맥락 탭 동기화 (프론트 동작, `path`·`id`로 충분)
 
 ---
@@ -503,3 +521,5 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 - 그래프 노드에 `reference_count` 포함 — 15개 초과 시 정렬·표기 기준.
 - PR 경고는 DB에 저장하고 `/pr-warnings`로 조회. 화면은 목록 형태(P2).
 - 탐색기 진입 링크 규격 `?repo=&fn=&tab=` 확정 (PR 코멘트·경고 이력 화면 공통).
+- 시안 반영: `/repos`에 대시보드 상단 요약(`summary`)과 진행률(`progress`), 대표 언어(`language`) 추가.
+- 영향 범위 그래프는 그래프 라이브러리 없이 CSS 카드 리스트로 구현한다 (시안 형태가 세로 카드 목록).

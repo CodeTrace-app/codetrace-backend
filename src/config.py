@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,6 +20,9 @@ class Settings(BaseSettings):
     llm_model: str = ""
 
     github_app_id: str = ""
+    # 로컬은 .pem 파일 경로, 배포 환경은 키 내용을 직접 넣는다
+    # (Render 같은 PaaS에는 파일을 올릴 수 없다). 내용이 있으면 그쪽을 쓴다.
+    github_app_private_key: str = ""
     github_app_private_key_path: str = ""
     github_webhook_secret: str = ""
 
@@ -37,6 +42,18 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def github_private_key(self) -> str:
+        """GitHub App 개인키 내용. 없으면 빈 문자열을 반환한다.
+
+        환경변수로 넣은 키는 줄바꿈이 \\n 문자로 들어오는 경우가 많아 되돌려준다.
+        """
+        if self.github_app_private_key:
+            return self.github_app_private_key.replace("\\n", "\n")
+        if self.github_app_private_key_path:
+            return Path(self.github_app_private_key_path).read_text(encoding="utf-8")
+        return ""
 
 
 settings = Settings()
