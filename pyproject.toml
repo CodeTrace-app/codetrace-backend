@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+# 레포 루트를 import 경로에 넣는다.
+# 이게 없으면 `pytest`로 직접 실행할 때 src를 찾지 못한다
+# (`python -m pytest`는 우연히 동작해서 로컬에서만 통과하는 함정이 있다).
+pythonpath = ["."]
+testpaths = ["tests"]
