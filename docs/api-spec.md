@@ -142,6 +142,22 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 { "url": "https://github.com/apps/codetrace-app/installations/new" }
 ```
 
+### `GET /integrations/github/callback` 🔓(state로 검증, 프론트가 호출하지 않음)
+
+GitHub App 설치 완료 후 **GitHub이 사용자 브라우저를 직접 리다이렉트**하는 콜백. 프론트가
+fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `install-url` 발급 시 서버가
+조직 식별자를 서명해 넣은 `state`를 그대로 돌려받아 요청자를 식별한다.
+
+**쿼리 파라미터** (GitHub이 채워서 리다이렉트)
+```
+?installation_id=12345678&setup_action=install&state=<install-url 발급 시 받은 값 그대로>
+```
+
+- `setup_action`: `"install"` | `"update"` → installation_id·계정명을 저장.
+  `"request"`(조직 승인 대기) → 저장하지 않고 그대로 통과.
+- 처리 후 **302/307 리다이렉트**: `{FRONTEND_URL}/settings/integrations`
+- `400` state 위조·만료 · `404` state의 조직이 존재하지 않음
+
 ### `GET /integrations/github/repos` 🚫데모
 
 설치된 GitHub App이 접근 가능한 레포 목록. 인덱싱 대상 선택 UI(S-FWXUHO)에 사용.

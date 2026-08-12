@@ -19,7 +19,13 @@ class Settings(BaseSettings):
     llm_org_id: str = ""
     llm_model: str = ""
 
+    # 프론트 배포 주소. 설치 콜백 리다이렉트, PR 경고 코멘트 링크(§8)가 공통으로 쓴다.
+    frontend_url: str = "http://localhost:5173"
+
     github_app_id: str = ""
+    # 설치 URL(https://github.com/apps/<slug>/installations/new)에 쓰는 앱 slug.
+    # app_id(JWT iss)와 다른 값이라 별도로 받는다.
+    github_app_slug: str = ""
     # 로컬은 .pem 파일 경로, 배포 환경은 키 내용을 직접 넣는다
     # (Render 같은 PaaS에는 파일을 올릴 수 없다). 내용이 있으면 그쪽을 쓴다.
     github_app_private_key: str = ""
