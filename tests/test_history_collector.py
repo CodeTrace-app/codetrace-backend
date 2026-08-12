@@ -12,6 +12,17 @@ from src.db.models import Commit, Organization, PullRequest, Repo, Symbol, Symbo
 from src.indexing import history
 
 
+def _collect_and_link(db_session, repo_row, installation_id: int = 1):
+    """수집과 근거 연결을 이어서 실행한다.
+
+    실제 인덱싱(run_indexing)은 이 사이에 파싱을 끼워 심볼을 만든다. 근거 연결은
+    심볼이 있어야 동작하므로, 심볼을 직접 넣어 검사하는 테스트에서는 두 단계만 부른다.
+    """
+    context = history.collect_repo_history(db_session, repo_row, installation_id=installation_id)
+    history.link_symbol_evidence(db_session, repo_row, context)
+    return context
+
+
 def _git(repo_dir, *args):
     subprocess.run(
         ["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace"
@@ -148,7 +159,7 @@ def test_심볼_근거에_포맷팅에_가려질_커밋들이_모두_연결된�
     )
     db_session.commit()
 
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _collect_and_link(db_session, repo_row)
 
     evidences = db_session.query(SymbolEvidence).filter_by(symbol_ident="auth.py::verify").all()
     commit_titles = {
@@ -175,7 +186,7 @@ def test_커밋_제목의_PR_번호로_PR_근거도_연결된다(db_session, rep
     )
     db_session.commit()
 
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _collect_and_link(db_session, repo_row)
 
     pr_evidences = db_session.query(SymbolEvidence).filter_by(kind="pr").all()
     assert len(pr_evidences) == 1
@@ -226,7 +237,7 @@ def test_PR_커밋_목록으로도_PR_근거가_붙는다(db_session, repo_row, 
     ).stdout.split()[-1]
     monkeypatch.setattr(history, "list_pr_commits", lambda i, f, n: [{"sha": oldest}])
 
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _collect_and_link(db_session, repo_row)
 
     pr_evidences = db_session.query(SymbolEvidence).filter_by(kind="pr").all()
     assert len(pr_evidences) == 1

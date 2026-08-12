@@ -1,0 +1,160 @@
+"""Python 파서. DB 없이 소스 문자열만으로 검사한다."""
+
+from src.parser import get_adapter, language_of
+from src.parser.python import PythonAdapter
+
+SOURCE = '''"""결제 처리."""
+
+TIMEOUT = 10
+
+
+def process_payment(order_id, amount, retry=3):
+    """PG사에 결제를 요청한다."""
+    _send(order_id)
+    return _finish(order_id)
+
+
+def _send(oid):
+    pass
+
+
+def _finish(oid):
+    pass
+
+
+class PgClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+
+    def request(self, url: str, timeout: int = 5) -> dict:
+        return process_payment(url, 0)
+
+    def retry_request(self, url):
+        # 재귀 호출은 그래프 간선으로 저장하지 않는다
+        return self.retry_request(url)
+'''
+
+
+def parse(source: str = SOURCE, path: str = "src/payment.py"):
+    return PythonAdapter().parse(path, source)
+
+
+# ── 심볼 추출 ──────────────────────────────────────────────────────────────
+
+
+def test_모듈_함수와_클래스_메서드를_모두_찾는다():
+    symbols, _ = parse()
+    assert {s.name for s in symbols} == {
+        "process_payment",
+        "_send",
+        "_finish",
+        "PgClient.__init__",
+        "PgClient.request",
+        "PgClient.retry_request",
+    }
+
+
+def test_식별자는_파일경로와_이름을_잇는다():
+    symbols, _ = parse()
+    idents = {s.ident for s in symbols}
+    assert "src/payment.py::process_payment" in idents
+    assert "src/payment.py::PgClient.request" in idents
+
+
+def test_라인_범위가_1부터_센다():
+    symbols, _ = parse()
+    fn = next(s for s in symbols if s.name == "process_payment")
+    # 소스에서 def process_payment가 6번째 줄이다
+    assert fn.start_line == 6
+    assert fn.end_line > fn.start_line
+
+
+# ── 파라미터 (PR 시그니처 판별의 기준) ──────────────────────────────────────
+
+
+def test_기본값이_있어도_이름만_남긴다():
+    symbols, _ = parse()
+    fn = next(s for s in symbols if s.name == "process_payment")
+    assert fn.params == ["order_id", "amount", "retry"]
+
+
+def test_self는_파라미터에서_뺀다():
+    symbols, _ = parse()
+    method = next(s for s in symbols if s.name == "PgClient.request")
+    assert method.params == ["url", "timeout"]
+
+
+def test_타입_힌트가_이름에_섞이지_않는다():
+    symbols, _ = parse()
+    method = next(s for s in symbols if s.name == "PgClient.__init__")
+    assert method.params == ["base_url"]
+
+
+def test_가변인자도_이름으로_잡는다():
+    symbols, _ = parse("def f(a, *args, **kwargs):\n    pass\n")
+    assert symbols[0].params == ["a", "args", "kwargs"]
+
+
+# ── 호출 추출 ──────────────────────────────────────────────────────────────
+
+
+def test_호출이_일어난_함수를_출발점으로_기록한다():
+    _, refs = parse()
+    call = next(r for r in refs if r.target_name == "_send")
+    assert call.source_ident == "src/payment.py::process_payment"
+    assert call.ref_type == "call"
+
+
+def test_메서드_안의_호출도_그_메서드에서_일어난_것으로_본다():
+    _, refs = parse()
+    call = next(r for r in refs if r.target_name == "process_payment")
+    assert call.source_ident == "src/payment.py::PgClient.request"
+
+
+def test_재귀_호출은_저장하지_않는다():
+    _, refs = parse()
+    assert not [r for r in refs if r.target_name == "retry_request"]
+
+
+def test_중첩_함수는_가장_안쪽을_출발점으로_삼는다():
+    source = """
+def outer(a):
+    def inner(b):
+        return helper(b)
+    return inner
+"""
+    _, refs = parse(source, "src/nested.py")
+    call = next(r for r in refs if r.target_name == "helper")
+    assert call.source_ident == "src/nested.py::inner"
+
+
+def test_모듈_레벨_호출은_저장하지_않는다():
+    _, refs = parse("import os\n\nsetup()\n", "src/boot.py")
+    assert refs == []
+
+
+def test_호출_줄_번호를_기록한다():
+    _, refs = parse()
+    call = next(r for r in refs if r.target_name == "_send")
+    assert call.line == 8
+
+
+# ── 어댑터 선택 ────────────────────────────────────────────────────────────
+
+
+def test_파이썬_파일에만_어댑터가_붙는다():
+    assert get_adapter("src/a.py") is not None
+    assert get_adapter("README.md") is None
+
+
+def test_지원하지_않는_파일도_언어를_묻는다():
+    """파서가 없어도 파일 트리에는 나와야 한다."""
+    assert language_of("src/a.py") == "python"
+    assert language_of("src/a.ts") == "typescript"
+    assert language_of("README.md") is None
+
+
+def test_문법_오류가_있어도_예외를_내지_않는다():
+    """작업 중인 코드가 섞여 있어도 인덱싱 전체가 멈추면 안 된다."""
+    symbols, _ = parse("def broken(:\n    pass\n\ndef ok():\n    pass\n", "src/x.py")
+    assert "ok" in {s.name for s in symbols}

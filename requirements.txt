@@ -10,3 +10,6 @@ pyjwt[crypto]
 passlib[bcrypt]
 bcrypt<4.1
 httpx
+# 소스 파싱. 언어별 문법은 별도 패키지로 추가한다 (TS/JS는 #21에서).
+tree-sitter
+tree-sitter-python
