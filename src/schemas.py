@@ -3,9 +3,11 @@
 형태는 docs/api-spec.md를 따른다. 명세를 바꾸려면 문서를 먼저 고친다.
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field
 
-from src.db.models import Organization, User
+from src.db.models import Organization, Repo, User
 
 
 class SignupRequest(BaseModel):
@@ -73,3 +75,73 @@ class MeOut(BaseModel):
     read_only: bool = False
     user: UserOut
     organization: OrganizationOut | None = None
+
+
+class RepoCreateRequest(BaseModel):
+    github_full_name: str = Field(min_length=1, max_length=200)
+
+
+class RepoProgressOut(BaseModel):
+    current: int
+    total: int
+
+
+class RepoStatsOut(BaseModel):
+    files: int
+    functions: int
+    commits: int
+    prs: int
+
+    @classmethod
+    def of(cls, repo: Repo) -> "RepoStatsOut":
+        return cls(files=repo.files_count, functions=repo.functions_count, commits=repo.commits_count, prs=repo.prs_count)
+
+
+class RepoOut(BaseModel):
+    """레포 카드 하나. GET /repos 목록과 POST /repos 응답이 공통으로 쓴다."""
+
+    id: int
+    name: str
+    github_full_name: str
+    default_branch: str
+    language: str | None
+    indexing_status: str
+    progress: RepoProgressOut | None
+    last_indexed_at: datetime | None
+    stats: RepoStatsOut
+
+    @classmethod
+    def of(cls, repo: Repo) -> "RepoOut":
+        progress = None
+        if repo.progress_total is not None:
+            progress = RepoProgressOut(current=repo.progress_current or 0, total=repo.progress_total)
+        return cls(
+            id=repo.id,
+            name=repo.name,
+            github_full_name=repo.github_full_name,
+            default_branch=repo.default_branch,
+            language=repo.language,
+            indexing_status=repo.indexing_status,
+            progress=progress,
+            last_indexed_at=repo.last_indexed_at,
+            stats=RepoStatsOut.of(repo),
+        )
+
+
+class DashboardSummaryOut(BaseModel):
+    github_account: str | None
+    github_connected: bool
+    repo_count: int
+    commit_count: int
+    review_comment_count: int
+    last_indexed_at: datetime | None
+
+
+class RepoListOut(BaseModel):
+    summary: DashboardSummaryOut
+    repos: list[RepoOut]
+
+
+class ReindexOut(BaseModel):
+    id: int
+    indexing_status: str
