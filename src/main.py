@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api import api_router
 from src.config import settings
 from src.db.init import create_tables
 
@@ -33,3 +34,6 @@ app.add_middleware(
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+app.include_router(api_router)

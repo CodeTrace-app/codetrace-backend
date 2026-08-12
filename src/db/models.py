@@ -71,16 +71,26 @@ class Organization(TimestampMixin, Base):
         return {"starter": 3, "team": 10}.get(self.plan, 999)
 
 
-class User(OrgScopedMixin, TimestampMixin, Base):
+class User(TimestampMixin, Base):
+    """사용자.
+
+    organization_id만 nullable이다. 가입과 조직 생성이 두 단계로 나뉘어 있어
+    가입 직후에는 소속 조직이 없기 때문이다. 조직이 없는 사용자는 query() 래퍼를
+    통과하는 데이터가 하나도 없으므로 격리 규칙은 그대로 유지된다.
+    """
+
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     role: Mapped[str] = mapped_column(String(10), default="member")  # admin|member
 
-    organization: Mapped["Organization"] = relationship(back_populates="users")
+    organization: Mapped["Organization | None"] = relationship(back_populates="users")
 
 
 # ---------------------------------------------------------------- 레포·인덱싱

@@ -101,10 +101,15 @@
 
 **응답 201**
 ```json
-{ "id": 1, "name": "에이크미", "slug": "acme-x1y2", "plan": "starter" }
+{
+  "organization": { "id": 1, "name": "에이크미", "slug": "acme-x1y2", "plan": "starter" },
+  "access_token": "eyJhbGciOi..."
+}
 ```
 
 - `409` 이미 조직이 있는 사용자
+- **새 토큰을 함께 돌려준다.** 가입 시점에 받은 토큰에는 조직이 없어서
+  그대로 두면 이후 API 호출이 빈 결과를 받는다. 프론트는 이 토큰으로 교체한다.
 
 ---
 
