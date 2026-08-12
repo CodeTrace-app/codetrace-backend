@@ -106,7 +106,8 @@ class Repo(OrgScopedMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     github_full_name: Mapped[str] = mapped_column(String(200), nullable=False)
     default_branch: Mapped[str] = mapped_column(String(100), default="main")
-    # 대시보드 카드 표시용. 수집 단계에서 채워진다 (S-FWXUHO 응답 예시의 "language").
+    # 대시보드 카드 표시용. GitHub이 판정한 대표 언어를 수집 단계에서 채운다.
+    # 지원 언어 판별과는 무관한 표시용 문자열이다 (api-spec §3).
     language: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     # collecting -> parsing -> done | failed
@@ -215,6 +216,9 @@ class PullRequest(OrgScopedMixin, Base):
     url: Mapped[str] = mapped_column(String(500), nullable=False)
     # 리뷰 스레드에서 뽑은 핵심 코멘트. 맥락 패널의 review_excerpt 원본.
     review_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 이 PR에 달린 코멘트 수. 대시보드 요약의 review_comment_count 합산에 쓴다.
+    # 본문은 발췌 하나만 남기므로 개수를 따로 저장해야 집계할 수 있다.
+    review_comment_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class SymbolEvidence(OrgScopedMixin, Base):

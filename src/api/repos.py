@@ -5,12 +5,13 @@
 대시보드가 읽는 진행 상태·통계를 노출하는 것까지만 한다.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from src.auth import Ctx, current_user, get_db, writable_user
 from src.db.models import PullRequest, Repo
 from src.db.query import org_query, query
+from src.indexing.runner import IN_PROGRESS, run_indexing
 from src.schemas import DashboardSummaryOut, ReindexOut, RepoCreateRequest, RepoListOut, RepoOut
 
 router = APIRouter(prefix="/repos", tags=["repos"])
@@ -27,8 +28,9 @@ def _get_org_or_404(ctx: Ctx, db: Session):
 def list_repos(ctx: Ctx = Depends(current_user), db: Session = Depends(get_db)) -> RepoListOut:
     org = _get_org_or_404(ctx, db)
     repos = list(db.scalars(query(Repo, ctx.organization_id)))
-    review_comment_count = len(
-        db.scalars(query(PullRequest, ctx.organization_id).where(PullRequest.review_excerpt.isnot(None))).all()
+    # PR 개수가 아니라 코멘트 총 개수다 (api-spec §3의 "수집된 리뷰" 카드).
+    review_comment_count = sum(
+        pr.review_comment_count for pr in db.scalars(query(PullRequest, ctx.organization_id))
     )
     last_indexed_at = max((r.last_indexed_at for r in repos if r.last_indexed_at), default=None)
 
@@ -45,9 +47,14 @@ def list_repos(ctx: Ctx = Depends(current_user), db: Session = Depends(get_db)) 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def add_repo(
-    payload: RepoCreateRequest, ctx: Ctx = Depends(writable_user), db: Session = Depends(get_db)
+    payload: RepoCreateRequest,
+    background: BackgroundTasks,
+    ctx: Ctx = Depends(writable_user),
+    db: Session = Depends(get_db),
 ) -> RepoOut:
     org = _get_org_or_404(ctx, db)
+    if org.github_installation_id is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "GitHub App이 설치되어 있지 않습니다")
 
     already_count = len(db.scalars(query(Repo, ctx.organization_id)).all())
     if already_count >= org.repo_limit:
@@ -69,19 +76,32 @@ def add_repo(
     db.add(repo)
     db.commit()
     db.refresh(repo)
+
+    # 선택 즉시 인덱싱을 시작한다 (S-FWXUHO).
+    background.add_task(run_indexing, repo.id, ctx.organization_id, org.github_installation_id)
     return RepoOut.of(repo)
 
 
 @router.post("/{repo_id}/reindex", status_code=status.HTTP_202_ACCEPTED)
-def reindex_repo(repo_id: int, ctx: Ctx = Depends(writable_user), db: Session = Depends(get_db)) -> ReindexOut:
+def reindex_repo(
+    repo_id: int,
+    background: BackgroundTasks,
+    ctx: Ctx = Depends(writable_user),
+    db: Session = Depends(get_db),
+) -> ReindexOut:
+    org = _get_org_or_404(ctx, db)
     repo = db.scalar(query(Repo, ctx.organization_id).where(Repo.id == repo_id))
     if repo is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "레포를 찾을 수 없습니다")
-    if repo.indexing_status in ("collecting", "parsing"):
+    if repo.indexing_status in IN_PROGRESS:
         raise HTTPException(status.HTTP_409_CONFLICT, "이미 인덱싱이 진행 중입니다")
+    if org.github_installation_id is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "GitHub App이 설치되어 있지 않습니다")
 
     repo.indexing_status = "collecting"
     repo.progress_current = None
     repo.progress_total = None
     db.commit()
+
+    background.add_task(run_indexing, repo.id, ctx.organization_id, org.github_installation_id)
     return ReindexOut(id=repo.id, indexing_status=repo.indexing_status)

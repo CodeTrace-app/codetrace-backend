@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api import api_router
 from src.config import settings
 from src.db.init import create_tables
+from src.indexing.runner import reset_stuck_indexing
 
 
 @asynccontextmanager
@@ -13,6 +14,8 @@ async def lifespan(app: FastAPI):
     # 없는 테이블만 생성한다. 컬럼 변경은 반영되지 않으므로
     # 모델을 고쳤으면 `python -m src.db.init --reset`으로 리셋한다.
     create_tables()
+    # 재시작으로 끊긴 인덱싱을 정리한다. 두지 않으면 재인덱싱이 영영 막힌다.
+    reset_stuck_indexing()
     yield
 
 
