@@ -11,7 +11,8 @@ from sqlalchemy import select
 
 from src.db.models import Repo
 from src.db.session import SessionLocal
-from src.indexing.history import collect_repo_history
+from src.indexing.history import collect_repo_history, link_symbol_evidence
+from src.indexing.parsing import parse_repo
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,17 @@ def run_indexing(repo_id: int, organization_id: int, installation_id: int) -> No
             return
 
         try:
-            collect_repo_history(db, repo, installation_id)
+            # 1) 수집 — 클론, 커밋, PR·리뷰
+            context = collect_repo_history(db, repo, installation_id)
 
-            # 파싱 단계(분석팀 #20·#21)가 들어오면 여기에 붙는다.
-            # 아직 없으므로 수집이 끝나면 바로 완료로 넘긴다.
+            # 2) 파싱 — 파일·심볼·참조. 근거 연결은 심볼이 있어야 하므로 이 뒤에 온다.
+            repo.indexing_status = "parsing"
+            db.commit()
+            parse_repo(db, repo, context.repo_dir)
+
+            # 3) 근거 연결 — 심볼마다 git log -L로 커밋·PR을 붙인다.
+            link_symbol_evidence(db, repo, context)
+
             repo.indexing_status = "done"
             repo.last_indexed_at = datetime.now(timezone.utc)
             repo.progress_current = None
