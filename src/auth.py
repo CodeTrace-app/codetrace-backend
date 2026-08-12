@@ -39,10 +39,14 @@ _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 @dataclass(frozen=True)
 class Ctx:
-    """요청을 보낸 사용자의 신원. 모든 조회는 이 organization_id로 격리된다."""
+    """요청을 보낸 사용자의 신원. 모든 조회는 이 organization_id로 격리된다.
+
+    organization_id는 조직을 만들기 전 사용자에게만 None이다.
+    그 상태에서는 query() 래퍼를 통과하는 데이터가 없다.
+    """
 
     user_id: int
-    organization_id: int
+    organization_id: int | None
     role: str
     read_only: bool
 
@@ -93,9 +97,10 @@ def current_user(
     except jwt.PyJWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰이 유효하지 않습니다")
 
+    org = payload.get("org")
     return Ctx(
         user_id=int(payload["sub"]),
-        organization_id=int(payload["org"]),
+        organization_id=int(org) if org is not None else None,
         role=payload.get("role", "member"),
         read_only=bool(payload.get("ro", False)),
     )

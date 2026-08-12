@@ -41,4 +41,5 @@ def test_내용이_있으면_경로보다_우선한다(tmp_path):
 
 
 def test_둘_다_없으면_빈_문자열():
-    assert Settings().github_private_key == ""
+    # 로컬 .env에 실제 키 경로가 들어 있으므로 무시하고 기본값만 본다.
+    assert Settings(_env_file=None).github_private_key == ""
