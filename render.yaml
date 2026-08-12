@@ -24,6 +24,19 @@ services:
         sync: false
       - key: LLM_MODEL
         sync: false
+      # 설치 콜백이 사용자를 돌려보낼 주소. 없으면 localhost로 튕긴다.
+      - key: FRONTEND_URL
+        sync: false
+      # GitHub App 인증. 비어 있으면 RS256 서명이 실패해 연동 API가 전부 500이 난다.
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_SLUG
+        sync: false
+      # 개인키는 파일을 올릴 수 없으므로 내용을 그대로 넣는다.
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
 
 databases:
   - name: codetrace-db

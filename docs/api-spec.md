@@ -1,4 +1,4 @@
-# Code Trace API 명세
+﻿# Code Trace API 명세
 
 > **이 문서가 프론트·백엔드 간 유일한 계약이다** (CLAUDE.md §2).
 > 명세를 바꾸려면 코드보다 이 문서를 먼저 수정하고 프론트 담당에게 알린다.
@@ -101,10 +101,15 @@
 
 **응답 201**
 ```json
-{ "id": 1, "name": "에이크미", "slug": "acme-x1y2", "plan": "starter" }
+{
+  "organization": { "id": 1, "name": "에이크미", "slug": "acme-x1y2", "plan": "starter" },
+  "access_token": "eyJhbGciOi..."
+}
 ```
 
 - `409` 이미 조직이 있는 사용자
+- **새 토큰을 함께 돌려준다.** 가입 시점에 받은 토큰에는 조직이 없어서
+  그대로 두면 이후 API 호출이 빈 결과를 받는다. 프론트는 이 토큰으로 교체한다.
 
 ---
 
@@ -117,7 +122,7 @@
 **응답 200**
 ```json
 {
-  "github": { "status": "connected", "installation_id": 12345678, "account": "acme-corp" },
+  "github": { "status": "connected", "installation_id": 12345678, "account": "acme-payments" },
   "gitlab": { "status": "coming_soon" },
   "jira":   { "status": "coming_soon" },
   "slack":  { "status": "coming_soon" }
@@ -134,8 +139,24 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 **응답 200**
 ```json
-{ "url": "https://github.com/apps/codetrace-app/installations/new" }
+{ "url": "https://github.com/apps/codetrace-app/installations/new?state=eyJhbGciOi..." }
 ```
+
+### `GET /integrations/github/callback` 🔓(state로 검증, 프론트가 호출하지 않음)
+
+GitHub App 설치 완료 후 **GitHub이 사용자 브라우저를 직접 리다이렉트**하는 콜백. 프론트가
+fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `install-url` 발급 시 서버가
+조직 식별자를 서명해 넣은 `state`를 그대로 돌려받아 요청자를 식별한다.
+
+**쿼리 파라미터** (GitHub이 채워서 리다이렉트)
+```
+?installation_id=12345678&setup_action=install&state=<install-url 발급 시 받은 값 그대로>
+```
+
+- `setup_action`: `"install"` | `"update"` → installation_id·계정명을 저장.
+  `"request"`(조직 승인 대기) → 저장하지 않고 그대로 통과.
+- 처리 후 **302/307 리다이렉트**: `{FRONTEND_URL}/settings/integrations`
+- `400` state 위조·만료 · `404` state의 조직이 존재하지 않음
 
 ### `GET /integrations/github/repos` 🚫데모
 
@@ -145,8 +166,8 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 ```json
 {
   "repos": [
-    { "github_full_name": "acme-corp/acme-payment-service", "private": true,  "already_added": true },
-    { "github_full_name": "acme-corp/acme-admin-web",       "private": true,  "already_added": false }
+    { "github_full_name": "acme-payments/acme-payment-service", "private": true,  "already_added": true },
+    { "github_full_name": "acme-payments/acme-admin-web",       "private": true,  "already_added": false }
   ]
 }
 ```
@@ -165,22 +186,34 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 **응답 200**
 ```json
 {
+  "summary": {
+    "github_account": "acme-payments",
+    "github_connected": true,
+    "repo_count": 4,
+    "commit_count": 1284,
+    "review_comment_count": 342,
+    "last_indexed_at": "2026-08-10T09:30:00Z"
+  },
   "repos": [
     {
       "id": 1,
       "name": "acme-payment-service",
-      "github_full_name": "acme-corp/acme-payment-service",
+      "github_full_name": "acme-payments/acme-payment-service",
       "default_branch": "main",
+      "language": "Python",
       "indexing_status": "parsing",
+      "progress": { "current": 142, "total": 218 },
       "last_indexed_at": null,
       "stats": { "files": 87, "functions": 342, "commits": 418, "prs": 96 }
     },
     {
       "id": 2,
       "name": "acme-admin-web",
-      "github_full_name": "acme-corp/acme-admin-web",
+      "github_full_name": "acme-payments/acme-admin-web",
       "default_branch": "main",
+      "language": "TypeScript",
       "indexing_status": "done",
+      "progress": null,
       "last_indexed_at": "2026-08-10T09:30:00Z",
       "stats": { "files": 45, "functions": 120, "commits": 210, "prs": 41 }
     }
@@ -188,9 +221,15 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 }
 ```
 
+- `summary`는 대시보드 상단 카드 3개(연동 계정 / 인덱싱된 레포 / 수집된 커밋)에 쓴다.
 - `indexing_status`: `"collecting"`(수집 중) → `"parsing"`(파싱 중) → `"done"`(완료) | `"failed"`
-- `failed`면 카드에 "재인덱싱" 버튼만 노출 (에러 화면 금지 — CLAUDE.md UI 규칙)
+- `progress`: 진행 중일 때만 값이 있고 `done`·`failed`면 `null`.
+  화면 표기는 `collecting`이면 "수집 중 · 커밋 142 / 218", `parsing`이면 "파싱 · 65%"
+  (퍼센트는 프론트가 `current/total`로 계산한다)
+- `language`: 레포의 대표 언어. 표시용 문자열이며 지원 언어 판별과는 무관하다.
+- `failed`면 카드에 "재인덱싱" 버튼만 노출 (에러 화면을 띄우지 않는다)
 - `stats`는 `done` 이전엔 수집된 만큼만 (0일 수 있음)
+- "최근 인덱싱 결과" 영역은 별도 API가 아니라 이 목록을 `last_indexed_at` 내림차순으로 추려서 쓴다.
 
 ### `POST /repos` 🚫데모
 
@@ -198,13 +237,16 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 **요청**
 ```json
-{ "github_full_name": "acme-corp/acme-payment-service" }
+{ "github_full_name": "acme-payments/acme-payment-service" }
 ```
 
 **응답 201** — `GET /repos`의 카드 1개와 동일 형태 (`indexing_status: "collecting"`)
 
 - `403` 플랜 레포 한도 초과 (`detail`에 "Starter 플랜은 3개까지..." 안내 문구)
 - `409` 이미 추가된 레포
+- `409` GitHub App 미설치 (연동 없이는 인덱싱할 수 없다)
+- **추가 즉시 백그라운드 인덱싱이 시작된다.** 응답은 기다리지 않고 바로 돌아오며,
+  진행 상태는 `GET /repos`의 `indexing_status`·`progress`로 확인한다.
 
 ### `POST /repos/{repo_id}/reindex` 🚫데모
 
@@ -216,6 +258,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 ```
 
 - `409` 이미 인덱싱 진행 중
+- `409` GitHub App 미설치
 
 ---
 
@@ -283,14 +326,14 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
       "title": "fix: 결제 타임아웃 3s→10s 상향",
       "author": "kimdev",
       "date": "2025-06-14T02:11:00Z",
-      "url": "https://github.com/acme-corp/acme-payment-service/commit/a1b2c3d"
+      "url": "https://github.com/acme-payments/acme-payment-service/commit/a1b2c3d"
     },
     {
       "kind": "pr",
       "number": 41,
       "title": "결제 재시도 로직 추가",
       "date": "2024-11-02T08:00:00Z",
-      "url": "https://github.com/acme-corp/acme-payment-service/pull/41",
+      "url": "https://github.com/acme-payments/acme-payment-service/pull/41",
       "review_excerpt": "재시도만 붙이면 중복 결제 위험이 있어요. 멱등키 검증이 먼저 필요합니다."
     }
   ],
@@ -328,10 +371,10 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 {
   "root": { "id": "src/payment.py::process_payment", "name": "process_payment", "path": "src/payment.py", "kind": "function" },
   "nodes": [
-    { "id": "src/api/checkout.py::checkout",        "name": "checkout",        "path": "src/api/checkout.py", "kind": "function", "depth": 1, "direction": "caller" },
-    { "id": "src/payment.py::TIMEOUT_SECONDS",      "name": "TIMEOUT_SECONDS", "path": "src/payment.py",      "kind": "constant", "depth": 1, "direction": "callee" },
-    { "id": "src/pg/client.py::PgClient.request",   "name": "PgClient.request","path": "src/pg/client.py",    "kind": "function", "depth": 1, "direction": "callee" },
-    { "id": "src/api/subscribe.py::renew",          "name": "renew",           "path": "src/api/subscribe.py","kind": "function", "depth": 2, "direction": "caller" }
+    { "id": "src/api/checkout.py::checkout",        "name": "checkout",        "path": "src/api/checkout.py", "kind": "function", "depth": 1, "direction": "caller", "reference_count": 12 },
+    { "id": "src/payment.py::TIMEOUT_SECONDS",      "name": "TIMEOUT_SECONDS", "path": "src/payment.py",      "kind": "constant", "depth": 1, "direction": "callee", "reference_count": 5 },
+    { "id": "src/pg/client.py::PgClient.request",   "name": "PgClient.request","path": "src/pg/client.py",    "kind": "function", "depth": 1, "direction": "callee", "reference_count": 3 },
+    { "id": "src/api/subscribe.py::renew",          "name": "renew",           "path": "src/api/subscribe.py","kind": "function", "depth": 2, "direction": "caller", "reference_count": 1 }
   ],
   "edges": [
     { "source": "src/api/checkout.py::checkout",  "target": "src/payment.py::process_payment",  "type": "call" },
@@ -346,14 +389,65 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 - 노드 `id` 규칙: `"파일경로::함수명"` (메서드는 `클래스.메서드`, 상수는 상수명)
 - `kind`: `"function"` | `"constant"` | `"class"`
-- `edge.type` (연결 유형 4가지, CLAUDE.md §4): `"call"` | `"import"` | `"constant"` | `"inheritance"`
+- `edge.type` (연결 유형 4가지): `"call"` | `"import"` | `"constant"` | `"inheritance"`
+  프론트는 이 값을 **색 + 텍스트 두 가지로 함께 표기**한다 (색맹·흑백 대응).
 - `direction`: root 기준 `"caller"`(이 함수를 참조) | `"callee"`(이 함수가 참조)
-- 서버는 깊이 2까지 전부 반환 (상한 100노드, 초과 시 `truncated: true` — 그래프 하단에 "일부만 표시됨" 안내). **15개 초과 접기(S-TQFUEH)는 프론트 처리** — 방향별 15개까지 표시하고 나머지는 "더 보기".
+- `reference_count`: 그 심볼이 레포 전체에서 참조되는 횟수.
+  **15개 초과 시 이 값 내림차순으로 정렬한 뒤 접는다**(S-TQFUEH). 노드에도 이 숫자를 표기한다.
+- 서버는 깊이 2까지 전부 반환 (상한 100노드, 초과 시 `truncated: true` — 그래프 하단에 "일부만 표시됨" 안내). **15개 초과 접기는 프론트 처리** — 15개까지 표시하고 나머지는 "더 보기 · N곳 접힘".
+- 렌더링은 **위→아래 세로 계층 카드 리스트**(CSS). 그래프 라이브러리를 쓰지 않는다.
 - 노드 클릭 → 코드뷰어 해당 위치 이동 + 맥락 탭 동기화 (프론트 동작, `path`·`id`로 충분)
 
 ---
 
-## 5. 관리자 설정
+## 5. PR 경고 이력
+
+웹훅이 PR을 검사한 결과는 DB에 저장되고, 이 API로 조회한다 (화면 9번, P2).
+
+### `GET /pr-warnings?repo_id=1&page=1`
+
+`repo_id`는 선택. 없으면 조직의 전체 레포.
+
+**응답 200**
+```json
+{
+  "items": [
+    {
+      "id": 8,
+      "repo": "acme-payment-service",
+      "pr_number": 132,
+      "pr_title": "결제 타임아웃 설정 변경",
+      "pr_url": "https://github.com/acme-payments/acme-payment-service/pull/132",
+      "author": "kimnewbie",
+      "created_at": "2026-08-10T04:12:00Z",
+      "warnings": [
+        {
+          "change_type": "signature_changed",
+          "symbol": "src/payment.py::process_payment",
+          "detail": "파라미터가 (order_id, amount, retry)에서 (order_id, amount)로 바뀌었습니다",
+          "impacted": [
+            { "symbol": "src/api/checkout.py::checkout", "path": "src/api/checkout.py", "line": 27, "type": "call" },
+            { "symbol": "src/api/subscribe.py::renew",   "path": "src/api/subscribe.py", "line": 55, "type": "call" }
+          ]
+        }
+      ]
+    }
+  ],
+  "page": 1,
+  "per_page": 20,
+  "total": 8
+}
+```
+
+- `change_type`: `"signature_changed"` | `"deleted"` | `"renamed"` | `"constant_changed"`
+  (경고 대상은 이 4가지뿐. 내부 로직·주석·타입 힌트·기본값 변경은 경고하지 않는다)
+- `impacted[].type`: 연결 유형 4가지와 동일
+- **목록 화면이다. 그래프는 코드 탐색기에만 둔다.**
+- 각 항목에서 탐색기로 이동하는 링크는 아래 §7의 쿼리 파라미터 규격을 쓴다.
+
+---
+
+## 6. 관리자 설정
 
 ### `GET /admin/query-logs?page=1` 🚫데모 · admin 전용
 
@@ -398,7 +492,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 ---
 
-## 6. 구독 문의
+## 7. 구독 문의
 
 ### `POST /inquiries` 🔓
 
@@ -416,20 +510,32 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 ---
 
-## 7. GitHub 웹훅 (내부 계약 — 프론트 무관)
+## 8. GitHub 웹훅
 
 ### `POST /webhooks/github` 🔓(서명으로 검증)
 
+- **웹훅 방식으로 구현한다. GitHub Actions·CI 방식이 아니다.**
 - 구독 이벤트: `pull_request` — `opened`, `synchronize`만 처리
 - `X-Hub-Signature-256` 서명 검증 필수. 불일치 시 `401`.
 - 처리: 변경 파일만 base/head 리비전에서 **즉시 재파싱**해 비교 (저장된 인덱스로 판별 금지)
-- 경고 코멘트의 웹 링크 규칙: `{FRONTEND_URL}/explorer?repo={repo_id}&path={path}&fn={function}`
-  (프론트는 이 쿼리 파라미터로 탐색기 진입 시 해당 함수를 바로 선택 상태로)
+- 판별 결과는 **DB에 저장**한다 (§5 PR 경고 이력 화면의 원본).
+- **PR당 코멘트는 1개만 유지한다.** `synchronize`로 다시 검사할 때 새 코멘트를 달지 말고
+  기존 코멘트를 수정한다 (코멘트 ID를 저장해둔다).
 - **응답 204** (본문 없음)
+
+### 경고 코멘트의 웹 화면 링크 규격 (합의됨 — 프론트·백엔드 공통)
+
+```
+{FRONTEND_URL}/explorer?repo=<repo_id>&fn=<파일경로::함수명>&tab=impact
+```
+
+- `fn` 값은 그래프 노드 `id`와 같은 형식(`src/payment.py::process_payment`)이며 URL 인코딩한다.
+- `tab`: `impact`(영향 범위) | `context`(맥락). 생략 시 `context`.
+- 프론트는 이 파라미터로 진입 시 해당 파일을 열고, 해당 함수를 선택 상태로 두고, 지정된 탭을 연다.
 
 ---
 
-## 8. 확정된 판단 (2026-08-10)
+## 9. 확정된 판단 (2026-08-10)
 
 - `indexing_status`에 `failed` 포함 — 실패 시 카드가 "파싱 중"에 멈춰 보이는 것 방지.
   카드에는 재인덱싱 버튼만 노출 (에러 화면 금지 규칙 준수).
@@ -437,3 +543,8 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
   필요해지면 이 문서에 먼저 추가한 뒤 구현.
 - 폴링 5초, 인덱싱 중인 레포가 있을 때만.
 - 그래프 서버 상한 100노드 + `truncated` 플래그. 데모 레포는 100노드를 넘지 않게 설계.
+- 그래프 노드에 `reference_count` 포함 — 15개 초과 시 정렬·표기 기준.
+- PR 경고는 DB에 저장하고 `/pr-warnings`로 조회. 화면은 목록 형태(P2).
+- 탐색기 진입 링크 규격 `?repo=&fn=&tab=` 확정 (PR 코멘트·경고 이력 화면 공통).
+- 시안 반영: `/repos`에 대시보드 상단 요약(`summary`)과 진행률(`progress`), 대표 언어(`language`) 추가.
+- 영향 범위 그래프는 그래프 라이브러리 없이 CSS 카드 리스트로 구현한다 (시안 형태가 세로 카드 목록).

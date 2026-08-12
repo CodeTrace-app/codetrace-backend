@@ -3,8 +3,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# git: 인덱싱이 레포를 클론해 `git log -L`로 줄 범위 이력을 읽는다 (#27).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
