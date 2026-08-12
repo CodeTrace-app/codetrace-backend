@@ -106,10 +106,15 @@ class Repo(OrgScopedMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     github_full_name: Mapped[str] = mapped_column(String(200), nullable=False)
     default_branch: Mapped[str] = mapped_column(String(100), default="main")
+    # 대시보드 카드 표시용. 수집 단계에서 채워진다 (S-FWXUHO 응답 예시의 "language").
+    language: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     # collecting -> parsing -> done | failed
     indexing_status: Mapped[str] = mapped_column(String(20), default="collecting")
     last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 진행 중(collecting/parsing)일 때만 값이 있다. done·failed면 둘 다 null.
+    progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     files_count: Mapped[int] = mapped_column(Integer, default=0)
     functions_count: Mapped[int] = mapped_column(Integer, default=0)
