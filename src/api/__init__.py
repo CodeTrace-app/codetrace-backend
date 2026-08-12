@@ -5,10 +5,12 @@
 
 from fastapi import APIRouter
 
-from src.api import auth, integrations, organizations, repos
+from src.api import admin, auth, inquiries, integrations, organizations, repos
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth.router)
 api_router.include_router(organizations.router)
 api_router.include_router(integrations.router)
 api_router.include_router(repos.router)
+api_router.include_router(inquiries.router)
+api_router.include_router(admin.router)

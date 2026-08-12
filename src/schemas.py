@@ -4,6 +4,7 @@
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -75,6 +76,28 @@ class MeOut(BaseModel):
     read_only: bool = False
     user: UserOut
     organization: OrganizationOut | None = None
+
+
+class InquiryCreateRequest(BaseModel):
+    organization_name: str = Field(min_length=1, max_length=100)
+    contact_name: str = Field(min_length=1, max_length=50)
+    contact: str = Field(min_length=1, max_length=100)
+    # 요금제 화면의 세 플랜. 다른 값이 오면 접수 단계에서 막는다.
+    plan: Literal["starter", "team", "business"]
+
+
+class InquiryCreatedOut(BaseModel):
+    id: int
+    message: str
+
+
+class PlanOut(BaseModel):
+    """관리자 설정 화면의 현재 요금제."""
+
+    plan: str
+    price_krw: int
+    repo_limit: int
+    repos_used: int
 
 
 class RepoCreateRequest(BaseModel):
