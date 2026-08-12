@@ -139,7 +139,7 @@ GitHub App 설치 페이지 URL. 프론트는 이 URL로 새 창을 연다.
 
 **응답 200**
 ```json
-{ "url": "https://github.com/apps/codetrace-app/installations/new" }
+{ "url": "https://github.com/apps/codetrace-app/installations/new?state=eyJhbGciOi..." }
 ```
 
 ### `GET /integrations/github/callback` 🔓(state로 검증, 프론트가 호출하지 않음)
@@ -244,6 +244,9 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
 
 - `403` 플랜 레포 한도 초과 (`detail`에 "Starter 플랜은 3개까지..." 안내 문구)
 - `409` 이미 추가된 레포
+- `409` GitHub App 미설치 (연동 없이는 인덱싱할 수 없다)
+- **추가 즉시 백그라운드 인덱싱이 시작된다.** 응답은 기다리지 않고 바로 돌아오며,
+  진행 상태는 `GET /repos`의 `indexing_status`·`progress`로 확인한다.
 
 ### `POST /repos/{repo_id}/reindex` 🚫데모
 
@@ -255,6 +258,7 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
 ```
 
 - `409` 이미 인덱싱 진행 중
+- `409` GitHub App 미설치
 
 ---
 

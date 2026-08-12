@@ -78,7 +78,10 @@ class MeOut(BaseModel):
 
 
 class RepoCreateRequest(BaseModel):
-    github_full_name: str = Field(min_length=1, max_length=200)
+    # "소유자/레포" 형식만 받는다. 이 값이 클론 경로와 GitHub API 경로에 그대로 들어가서,
+    # ".."이나 슬래시가 섞이면 의도하지 않은 디렉터리·엔드포인트를 가리킬 수 있다.
+    # 각 조각 100자 제한은 Repo.name(String(100))에 맞춘 것이다.
+    github_full_name: str = Field(pattern=r"^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$")
 
 
 class RepoProgressOut(BaseModel):

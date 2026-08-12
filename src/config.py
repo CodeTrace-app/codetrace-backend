@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # 프론트 배포 주소. 설치 콜백 리다이렉트, PR 경고 코멘트 링크(§8)가 공통으로 쓴다.
     frontend_url: str = "http://localhost:5173"
 
+    # 인덱싱용 레포 클론이 쌓이는 곳. git log -L에 전체 이력이 필요해 얕은 클론을 못 쓴다.
+    # 배포 환경의 디스크는 재시작하면 비워지지만, 없으면 다시 클론하므로 문제되지 않는다.
+    clone_root: str = "./local/clones"
+
     github_app_id: str = ""
     # 설치 URL(https://github.com/apps/<slug>/installations/new)에 쓰는 앱 slug.
     # app_id(JWT iss)와 다른 값이라 별도로 받는다.

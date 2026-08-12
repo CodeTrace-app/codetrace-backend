@@ -5,6 +5,7 @@
 서명 비용과 GitHub 레이트리밋을 낭비하므로 만료 전까지 재사용한다.
 """
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -17,7 +18,9 @@ _JWT_TTL = timedelta(minutes=9)  # GitHub 허용 상한 10분에서 시계 오�
 _TOKEN_REFRESH_MARGIN = timedelta(seconds=60)
 
 # installation_id -> (token, expires_at). 단일 프로세스 배포 전제 (해커톤 규모).
+# 인덱싱은 백그라운드 스레드에서 도니 단일 프로세스여도 동시 접근은 일어난다.
 _token_cache: dict[int, tuple[str, datetime]] = {}
+_cache_lock = threading.Lock()
 
 
 class GitHubAppError(Exception):
@@ -48,16 +51,17 @@ def _request(method: str, path: str, token: str, **kwargs) -> httpx.Response:
 
 def get_installation_token(installation_id: int) -> str:
     """installation access token을 반환한다. 캐시가 만료 임박 전이면 재사용한다."""
-    cached = _token_cache.get(installation_id)
-    now = datetime.now(timezone.utc)
-    if cached and cached[1] - now > _TOKEN_REFRESH_MARGIN:
-        return cached[0]
+    with _cache_lock:
+        cached = _token_cache.get(installation_id)
+        now = datetime.now(timezone.utc)
+        if cached and cached[1] - now > _TOKEN_REFRESH_MARGIN:
+            return cached[0]
 
-    response = _request("POST", f"/app/installations/{installation_id}/access_tokens", _app_jwt())
-    data = response.json()
-    expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
-    _token_cache[installation_id] = (data["token"], expires_at)
-    return data["token"]
+        response = _request("POST", f"/app/installations/{installation_id}/access_tokens", _app_jwt())
+        data = response.json()
+        expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+        _token_cache[installation_id] = (data["token"], expires_at)
+        return data["token"]
 
 
 def get_installation_account(installation_id: int) -> str:
