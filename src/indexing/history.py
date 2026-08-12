@@ -8,6 +8,7 @@
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -260,7 +261,21 @@ def _save_repo_metadata(db: Session, repo: Repo, installation_id: int) -> None:
     db.commit()
 
 
-def collect_repo_history(db: Session, repo: Repo, installation_id: int) -> None:
+@dataclass
+class HistoryContext:
+    """수집 결과. 파싱이 끝난 뒤 근거를 연결할 때 다시 쓴다.
+
+    근거 연결은 심볼이 있어야 하므로 수집 단계에서 바로 할 수 없다.
+    호출자(run_indexing)가 파싱을 끼워 넣고 이 값을 link_symbol_evidence로 넘긴다.
+    """
+
+    repo_dir: Path
+    commits_by_sha: dict[str, Commit]
+    prs_by_number: dict[int, PullRequest]
+    pr_by_sha: dict[str, PullRequest]
+
+
+def collect_repo_history(db: Session, repo: Repo, installation_id: int) -> HistoryContext:
     """레포 하나의 이력을 수집한다. 상태 전이는 호출자(run_indexing)가 맡는다."""
     token = get_installation_token(installation_id)
     repo_dir = _clone_root() / str(repo.organization_id) / repo.github_full_name.replace("/", "__")
@@ -270,6 +285,16 @@ def collect_repo_history(db: Session, repo: Repo, installation_id: int) -> None:
 
     commits_by_sha = _save_commits(db, repo, git_history.list_commits(repo_dir))
     prs_by_number, pr_by_sha = _save_pull_requests(db, repo, installation_id)
-    # 심볼은 파싱 단계가 채운다(#20). 파서가 붙으면 이 호출은 파싱 뒤로 옮겨야
-    # 첫 인덱싱부터 근거가 채워진다. 지금은 심볼이 없어 조용히 0건으로 끝난다.
-    _link_symbol_evidence(db, repo, repo_dir, commits_by_sha, prs_by_number, pr_by_sha)
+    return HistoryContext(repo_dir, commits_by_sha, prs_by_number, pr_by_sha)
+
+
+def link_symbol_evidence(db: Session, repo: Repo, context: HistoryContext) -> int:
+    """파싱으로 심볼이 만들어진 뒤, 심볼마다 근거 커밋·PR을 연결한다."""
+    return _link_symbol_evidence(
+        db,
+        repo,
+        context.repo_dir,
+        context.commits_by_sha,
+        context.prs_by_number,
+        context.pr_by_sha,
+    )
