@@ -125,7 +125,73 @@ def outer(a):
 """
     _, refs = parse(source, "src/nested.py")
     call = next(r for r in refs if r.target_name == "helper")
-    assert call.source_ident == "src/nested.py::inner"
+    # 중첩 함수의 ident에는 감싼 함수 이름이 붙는다 (클래스 메서드와 같은 규칙)
+    assert call.source_ident == "src/nested.py::outer.inner"
+
+
+# ── 이름이 겹치는 정의 ─────────────────────────────────────────────────────
+
+
+def test_다른_함수_안의_같은_이름은_서로_다른_심볼이_된다():
+    """ident가 겹치면 Symbol 유니크 제약에 걸려 인덱싱 전체가 실패한다."""
+    source = """
+def test_a():
+    def fake_request(method):
+        pass
+    return fake_request
+
+
+def test_b():
+    def fake_request(method):
+        pass
+    return fake_request
+"""
+    symbols, _ = parse(source, "tests/test_x.py")
+    idents = [s.ident for s in symbols]
+    assert len(idents) == len(set(idents))
+    assert "tests/test_x.py::test_a.fake_request" in idents
+    assert "tests/test_x.py::test_b.fake_request" in idents
+
+
+def test_클래스가_다르면_같은_메서드_이름도_구분된다():
+    source = """
+class A:
+    def run(self):
+        pass
+
+
+class B:
+    def run(self):
+        pass
+"""
+    symbols, _ = parse(source, "src/x.py")
+    assert {s.ident for s in symbols} == {"src/x.py::A.run", "src/x.py::B.run"}
+
+
+# ── 데코레이터 ─────────────────────────────────────────────────────────────
+
+
+def test_데코레이터_줄부터_함수_범위로_잡는다():
+    """근거 연결(git log -L)이 이 범위를 쓴다. 빼면 데코레이터만 바꾼 커밋이 누락된다."""
+    source = """@router.get("/repos")
+@requires_auth
+def list_repos(ctx):
+    pass
+"""
+    symbols, _ = parse(source, "src/api/repos.py")
+    fn = symbols[0]
+    assert fn.start_line == 1  # def는 3행이지만 데코레이터가 1행부터다
+    assert fn.end_line == 4
+
+
+def test_데코레이터_안의_호출은_그래프에_넣지_않는다():
+    """@router.get(...)은 함수 본문이 부르는 대상이 아니라 함수에 걸린 장식이다."""
+    source = """@router.get("/repos")
+def list_repos(ctx):
+    return fetch()
+"""
+    _, refs = parse(source, "src/api/repos.py")
+    assert [r.target_name for r in refs] == ["fetch"]
 
 
 def test_모듈_레벨_호출은_저장하지_않는다():
