@@ -13,8 +13,9 @@ from src.parser.base import (
     ParseResult,
 )
 from src.parser.python import PythonAdapter
+from src.parser.typescript import TypeScriptAdapter
 
-_ADAPTERS: tuple[LanguageAdapter, ...] = (PythonAdapter(),)
+_ADAPTERS: tuple[LanguageAdapter, ...] = (PythonAdapter(), TypeScriptAdapter())
 
 # 대시보드·파일 트리에 표시할 언어 이름 (api-spec §4).
 LANGUAGE_BY_EXTENSION = {

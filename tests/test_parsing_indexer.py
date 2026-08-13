@@ -262,6 +262,89 @@ def test_상수_참조도_이름이_겹치면_import로_좁힌다(db_session, re
     assert row.target_ident == "src/config.py::TIMEOUT"
 
 
+# ── TypeScript (이슈 #21) ──────────────────────────────────────────────────
+
+
+def test_TS의_상대_import로_호출_대상을_확정한다(db_session, repo_row, tmp_path):
+    """데모 레포의 RefundListPage → api/refund → api/client 구조다."""
+    write(
+        tmp_path,
+        {
+            "admin-web/src/api/client.ts": "export function request(path) { return path }\n",
+            "admin-web/src/api/refund.ts": (
+                "import { request } from './client'\n\n"
+                "export function listRefunds() { return request('/refunds') }\n"
+            ),
+            "admin-web/src/pages/RefundListPage.tsx": (
+                "import { listRefunds } from '../api/refund'\n\n"
+                "export default function RefundListPage() { return listRefunds() }\n"
+            ),
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    edges = {(r.source_ident, r.target_ident) for r in calls(db_session)}
+    assert edges == {
+        (
+            "admin-web/src/pages/RefundListPage.tsx::RefundListPage",
+            "admin-web/src/api/refund.ts::listRefunds",
+        ),
+        ("admin-web/src/api/refund.ts::listRefunds", "admin-web/src/api/client.ts::request"),
+    }
+
+
+def test_index_파일을_가리키는_import도_찾는다(db_session, repo_row, tmp_path):
+    """'./api'는 api/index.ts를 가리킨다. TS/JS에서 흔한 형태다."""
+    write(
+        tmp_path,
+        {
+            "src/api/index.ts": "export function request() { return 1 }\n",
+            "src/app.ts": "import { request } from './api'\n\nexport function run() { return request() }\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert one(calls(db_session)).target_ident == "src/api/index.ts::request"
+
+
+def test_외부_라이브러리_import는_TS에서도_걸러진다(db_session, repo_row, tmp_path):
+    write(
+        tmp_path,
+        {
+            "src/a.ts": "export function useState() { return 1 }\n",
+            "src/page.tsx": (
+                "import { useState } from 'react'\n\n"
+                "export default function P() { return useState() }\n"
+            ),
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    # react의 useState다. 레포 안의 동명 함수로 이어지면 없는 관계를 그리는 것이다
+    assert calls(db_session) == []
+    assert {r.target_ident for r in imports(db_session)} == {"react.useState"}
+
+
+def test_파이썬과_TS가_한_레포에_섞여도_각자_인덱싱된다(db_session, repo_row, tmp_path):
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def process():\n    pass\n",
+            "admin-web/src/api/refund.ts": "export function listRefunds() { return 1 }\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert {s.ident for s in db_session.query(Symbol).all()} == {
+        "src/payment.py::process",
+        "admin-web/src/api/refund.ts::listRefunds",
+    }
+
+
 # ── import 근거 저장 (PRD의 추적 관계 4가지 중 하나) ────────────────────────
 
 
