@@ -36,7 +36,12 @@ class PgClient:
 
 
 def parse(source: str = SOURCE, path: str = "src/payment.py"):
-    return PythonAdapter().parse(path, source)
+    result = PythonAdapter().parse(path, source)
+    return result.symbols, result.references
+
+
+def parse_imports(source: str, path: str = "src/api/repos.py"):
+    return PythonAdapter().parse(path, source).imports
 
 
 # ── 심볼 추출 ──────────────────────────────────────────────────────────────
@@ -203,6 +208,62 @@ def test_호출_줄_번호를_기록한다():
     _, refs = parse()
     call = next(r for r in refs if r.target_name == "_send")
     assert call.line == 8
+
+
+# ── import 추출 (이슈 #20) ─────────────────────────────────────────────────
+
+
+def test_모듈_import를_잡는다():
+    items = parse_imports("import json\nimport os.path\n")
+    assert [(i.local_name, i.module, i.origin_name) for i in items] == [
+        ("json", "json", None),
+        ("os", "os.path", None),
+    ]
+
+
+def test_from_import를_잡는다():
+    items = parse_imports("from src.payment import process_payment, refund\n")
+    assert [(i.local_name, i.module, i.origin_name) for i in items] == [
+        ("process_payment", "src.payment", "process_payment"),
+        ("refund", "src.payment", "refund"),
+    ]
+
+
+def test_별칭을_그_파일에서_쓰는_이름으로_남긴다():
+    items = parse_imports("from src.payment import process_payment as pay\nimport numpy as np\n")
+    assert [(i.local_name, i.origin_name) for i in items] == [
+        ("pay", "process_payment"),
+        ("np", None),
+    ]
+
+
+def test_상대_import를_절대_모듈_경로로_바꾼다():
+    """src/api/repos.py 기준이다."""
+    items = parse_imports("from .schemas import RepoOut\nfrom ..db.models import Repo\n")
+    assert [(i.module, i.origin_name) for i in items] == [
+        ("src.api.schemas", "RepoOut"),
+        ("src.db.models", "Repo"),
+    ]
+
+
+def test_점만_있는_상대_import도_잡는다():
+    items = parse_imports("from . import auth\n")
+    assert [(i.module, i.origin_name) for i in items] == [("src.api", "auth")]
+
+
+def test_레포_밖으로_올라가는_상대_import는_버린다():
+    """확정할 수 없는 경로다. 추측으로 연결하지 않는다."""
+    assert parse_imports("from ....outside import x\n", "src/x.py") == []
+
+
+def test_와일드카드_import는_건너뛴다():
+    """어떤 이름이 들어왔는지 알 수 없다."""
+    assert parse_imports("from src.payment import *\n") == []
+
+
+def test_함수_안의_지역_import도_잡는다():
+    items = parse_imports("def f():\n    from src.payment import refund\n    return refund\n")
+    assert [i.module for i in items] == ["src.payment"]
 
 
 # ── 어댑터 선택 ────────────────────────────────────────────────────────────

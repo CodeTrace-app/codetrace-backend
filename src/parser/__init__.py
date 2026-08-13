@@ -5,7 +5,13 @@
 
 from pathlib import PurePosixPath
 
-from src.parser.base import LanguageAdapter, ParsedReference, ParsedSymbol
+from src.parser.base import (
+    LanguageAdapter,
+    ParsedImport,
+    ParsedReference,
+    ParsedSymbol,
+    ParseResult,
+)
 from src.parser.python import PythonAdapter
 
 _ADAPTERS: tuple[LanguageAdapter, ...] = (PythonAdapter(),)
@@ -41,6 +47,8 @@ def language_of(path: str) -> str | None:
 __all__ = [
     "LANGUAGE_BY_EXTENSION",
     "LanguageAdapter",
+    "ParseResult",
+    "ParsedImport",
     "ParsedReference",
     "ParsedSymbol",
     "get_adapter",
