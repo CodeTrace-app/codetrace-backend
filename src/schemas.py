@@ -4,23 +4,37 @@
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
 
 from src.db.models import Organization, Repo, User
 
 
+def _fits_bcrypt(value: str) -> str:
+    """bcrypt가 처리할 수 있는 길이인지 본다.
+
+    bcrypt는 72바이트를 넘는 부분을 조용히 버린다. 글자 수만 제한하면
+    한글이나 이모지가 섞인 비밀번호는 뒷부분이 검증에 반영되지 않는다
+    (한글 한 글자가 UTF-8로 3바이트라 24자만 넘어도 한도에 닿는다).
+    """
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("비밀번호가 너무 깁니다 (한글은 한 글자가 3바이트로 계산됩니다)")
+    return value
+
+
+BcryptPassword = Annotated[str, AfterValidator(_fits_bcrypt)]
+
+
 class SignupRequest(BaseModel):
     email: EmailStr
-    # bcrypt는 72바이트를 넘는 입력을 처리하지 못한다.
-    password: str = Field(min_length=8, max_length=64)
+    password: BcryptPassword = Field(min_length=8)
     name: str = Field(min_length=1, max_length=50)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(max_length=64)
+    password: BcryptPassword
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -106,11 +120,14 @@ class RepoCreateRequest(BaseModel):
     "소유자/레포" 형식만 받는다. 이 값이 클론 경로와 GitHub API 경로에 그대로 들어가서,
     ".."이 섞이면 의도하지 않은 엔드포인트를 가리킨다 (httpx가 dot segment를 정규화한다).
     각 조각은 영숫자로 시작하게 해서 ".."과 "."을 원천 차단한다.
-    100자 제한은 Repo.name(String(100))에 맞춘 것이다.
+    조각당 100자는 Repo.name(String(100))에, 전체 200자는
+    Repo.github_full_name(String(200))에 맞춘 것이다. 조각 길이만 막으면
+    201자가 통과해 저장 시점에 500이 난다.
     """
 
     github_full_name: str = Field(
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
     )
 
 
