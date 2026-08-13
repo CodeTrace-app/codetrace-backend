@@ -49,7 +49,7 @@ def parse_imports(source: str, path: str = "src/api/repos.py"):
 
 def test_모듈_함수와_클래스_메서드를_모두_찾는다():
     symbols, _ = parse()
-    assert {s.name for s in symbols} == {
+    assert {s.name for s in symbols if s.kind == "function"} == {
         "process_payment",
         "_send",
         "_finish",
@@ -264,6 +264,102 @@ def test_와일드카드_import는_건너뛴다():
 def test_함수_안의_지역_import도_잡는다():
     items = parse_imports("def f():\n    from src.payment import refund\n    return refund\n")
     assert [i.module for i in items] == ["src.payment"]
+
+
+# ── 전역 상수 (이슈 #22) ───────────────────────────────────────────────────
+
+CONSTANTS = '''from src.config import SECRET_KEY
+
+TIMEOUT_SECONDS = 10
+MAX_RETRY: int = 3
+router = APIRouter()
+
+
+def process(order_id):
+    delay = TIMEOUT_SECONDS
+    return sign(order_id, SECRET_KEY), delay
+
+
+class Client:
+    DEFAULT = 1
+
+    def send(self):
+        LOCAL_MAX = 5
+        return TIMEOUT_SECONDS, LOCAL_MAX
+'''
+
+
+def parse_constants(source: str = CONSTANTS, path: str = "src/payment.py"):
+    result = PythonAdapter().parse(path, source)
+    return (
+        [s for s in result.symbols if s.kind == "constant"],
+        [r for r in result.references if r.ref_type == "constant"],
+    )
+
+
+def test_모듈_최상위_대문자_이름을_상수로_잡는다():
+    symbols, _ = parse_constants()
+    assert {s.ident for s in symbols} == {
+        "src/payment.py::TIMEOUT_SECONDS",
+        "src/payment.py::MAX_RETRY",
+    }
+
+
+def test_소문자_모듈_변수는_상수가_아니다():
+    """router = APIRouter()는 상수가 아니다."""
+    symbols, _ = parse_constants()
+    assert "router" not in {s.name for s in symbols}
+
+
+def test_클래스_안의_대문자는_전역_상수가_아니다():
+    symbols, _ = parse_constants()
+    assert "DEFAULT" not in {s.name for s in symbols}
+
+
+def test_상수를_쓴_함수에서_참조가_나온다():
+    _, refs = parse_constants()
+    assert ("src/payment.py::process", "TIMEOUT_SECONDS") in {
+        (r.source_ident, r.target_name) for r in refs
+    }
+    # 다른 파일에서 import한 상수도 이름으로 남는다. 대조는 인덱싱이 한다
+    assert ("src/payment.py::process", "SECRET_KEY") in {
+        (r.source_ident, r.target_name) for r in refs
+    }
+
+
+def test_메서드_안의_참조도_그_메서드에서_나온다():
+    _, refs = parse_constants()
+    assert ("src/payment.py::Client.send", "TIMEOUT_SECONDS") in {
+        (r.source_ident, r.target_name) for r in refs
+    }
+
+
+def test_함수_안에서_만든_대문자_이름은_참조가_아니다():
+    """지역 변수다. 남기면 다른 파일의 같은 이름 상수로 잘못 이어진다."""
+    _, refs = parse_constants()
+    assert "LOCAL_MAX" not in {r.target_name for r in refs}
+
+
+def test_남의_객체_속성은_참조하지_않는다():
+    """settings.SECRET_KEY의 SECRET_KEY는 이 파일 상수가 아니다."""
+    _, refs = parse_constants("def f(settings):\n    return settings.SECRET_KEY\n")
+    assert refs == []
+
+
+def test_import_구문의_이름은_참조가_아니다():
+    _, refs = parse_constants("from src.config import SECRET_KEY\n")
+    assert refs == []
+
+
+def test_튜플_대입도_각각_상수로_잡는다():
+    symbols, _ = parse_constants("WIDTH, HEIGHT = 10, 20\n")
+    assert {s.name for s in symbols} == {"WIDTH", "HEIGHT"}
+
+
+def test_상수_정의_자체는_참조가_아니다():
+    """모듈 레벨이라 출발점이 없다. 자기 자신을 참조하는 간선을 만들지 않는다."""
+    _, refs = parse_constants("TIMEOUT = 10\n")
+    assert refs == []
 
 
 # ── 어댑터 선택 ────────────────────────────────────────────────────────────
