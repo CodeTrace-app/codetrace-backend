@@ -322,7 +322,9 @@ def generate_repo_summaries(db: Session, repo: Repo) -> int:
             repo.progress_current = index
             db.commit()
 
-    repo.progress_current = len(symbols)
+    # 연속 실패로 중단했다면 처리한 만큼만 반영한다. index를 끝까지 채우면
+    # 처리하다 만 상태를 100%로 보여줘 사용자가 완료로 착각한다.
+    repo.progress_current = index if consecutive_failures >= _MAX_CONSECUTIVE_SUMMARY_FAILURES else len(symbols)
     db.commit()
     return generated
 
