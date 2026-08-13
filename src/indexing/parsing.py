@@ -11,6 +11,7 @@
 import json
 import logging
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import Reference, Repo, SourceFile, Symbol
 from src.db.query import query
-from src.parser import ParsedReference, ParsedSymbol, get_adapter, language_of
+from src.parser import ParsedImport, ParsedReference, ParsedSymbol, get_adapter, language_of
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,12 @@ SKIP_DIRS = {
 
 # 코드 뷰어가 감당할 크기. 넘으면 잘라서 저장하고 화면에서 안내한다 (api-spec §4).
 MAX_FILE_BYTES = 400_000
+
+# 심볼이 아니라 파일(모듈) 자체를 가리킬 때 ident 뒤에 붙이는 표시.
+# import는 모듈 레벨에서 일어나 출발 심볼이 없기 때문에 필요하다.
+# 꺾쇠는 파이썬 식별자에 쓸 수 없어 실제 심볼 이름과 겹치지 않는다.
+# 그래프 API(#23)는 이 표시가 붙은 ident를 노드로 만들지 않는다.
+MODULE_IDENT = "::<module>"
 
 # 트리에 넣을 파일 확장자. 지원 언어가 아니어도 읽을 수 있는 것은 보여준다.
 READABLE_SUFFIXES = {
@@ -97,22 +104,124 @@ def _drop_duplicate_idents(symbols: list[ParsedSymbol]) -> list[ParsedSymbol]:
     return list(by_ident.values())
 
 
+def _module_paths(file_paths: list[str]) -> dict[str, str]:
+    """모듈 경로 → 파일 경로. 레포 안에 실제로 있는 파일만 들어간다.
+
+    여기 없는 모듈이 외부 라이브러리다. httpx나 jwt는 레포에 파일이 없으므로
+    자연히 걸러진다 (이슈 #20 완료 조건).
+    """
+    modules: dict[str, str] = {}
+    for path in file_paths:
+        if not path.endswith(".py"):
+            continue
+        if path.endswith("/__init__.py"):
+            dotted = path[: -len("/__init__.py")].replace("/", ".")
+        elif path == "__init__.py":
+            continue
+        else:
+            dotted = path[: -len(".py")].replace("/", ".")
+        if dotted:
+            modules[dotted] = path
+    return modules
+
+
+@dataclass(frozen=True)
+class ImportIndex:
+    """import에서 얻은, 이름이 어느 파일에서 왔는지에 대한 지식 (이슈 #20).
+
+    둘 다 "파일 경로 → {그 파일에서 쓰는 이름: 그 이름이 사는 파일}" 형태다.
+    레포 밖 모듈은 어느 쪽에도 들어오지 않는다. 외부 라이브러리가 걸러지는 지점이다.
+    """
+
+    # from src.payment import process_payment → {"process_payment": "src/payment.py"}
+    names: dict[str, dict[str, str]] = field(default_factory=dict)
+    # import src.payment as pay → {"pay": "src/payment.py"}
+    modules: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+def _build_import_index(
+    imports_by_file: dict[str, list[ParsedImport]], modules: dict[str, str]
+) -> ImportIndex:
+    """파일별로 "이 이름은 저 파일에서 왔다"를 만든다.
+
+    `from src.payment import process_payment`을 읽어두면 그 파일 안의
+    process_payment() 호출이 어느 파일 것인지 확정된다. 이름이 겹쳐서
+    버려지던 호출들이 여기서 살아난다.
+
+    `import src.github.git_history as git_history` 쪽은 이름이 모듈을 가리킨다.
+    호출부에 git_history.list_commits()로 나타나므로 수신자와 맞춰 확정한다.
+    """
+    index = ImportIndex()
+    for path, items in imports_by_file.items():
+        for item in items:
+            if item.origin_name is None:
+                # `import src.payment` — 이름이 모듈을 가리킨다.
+                target = modules.get(item.module)
+                if target is not None:
+                    index.modules.setdefault(path, {})[item.local_name] = target
+                continue
+
+            # `from src import payment`도 모듈을 들여오는 형태다.
+            submodule = modules.get(f"{item.module}.{item.origin_name}")
+            if submodule is not None:
+                index.modules.setdefault(path, {})[item.local_name] = submodule
+
+            target = modules.get(item.module)
+            if target is not None:
+                index.names.setdefault(path, {})[item.local_name] = target
+    return index
+
+
+def _narrow(candidates: list[str], ref: ParsedReference, index: ImportIndex) -> list[str]:
+    """후보가 여럿일 때 범위를 좁힌다. 근거가 강한 순서대로 본다.
+
+    1. `git_history.list_commits()`처럼 수신자가 import한 모듈이면 그 파일로 확정된다.
+       파이썬이 이 호출을 해석하는 방식 그대로이므로 다른 규칙보다 확실하다.
+       그 파일에 그 이름이 없으면 다른 후보로 넘어가지 않고 버린다.
+    2. import로 이름이 묶여 있으면 그 파일 것만 남긴다.
+    3. 그래도 여럿이면 같은 파일 안의 정의를 고른다. 이름이 겹쳐도 파이썬은
+       import하지 않은 이상 자기 파일 것을 부른다. 단 `obj.f()`처럼 다른 객체를
+       거친 호출에는 쓰지 않는다. 그 f는 이 파일의 f가 아니라 obj의 것이다.
+    """
+    if ref.receiver is not None:
+        module_path = index.modules.get(ref.path, {}).get(ref.receiver)
+        if module_path is not None:
+            return [c for c in candidates if c.split("::", 1)[0] == module_path]
+
+    bound_path = index.names.get(ref.path, {}).get(ref.target_name)
+    if bound_path is not None:
+        bound = [c for c in candidates if c.split("::", 1)[0] == bound_path]
+        if bound:
+            return bound
+
+    if ref.receiver is not None and ref.receiver not in ("self", "cls"):
+        return candidates
+
+    same_file = [c for c in candidates if c.split("::", 1)[0] == ref.path]
+    return same_file or candidates
+
+
 def _resolve_targets(
-    references: list[ParsedReference], symbols_by_name: dict[str, list[str]]
+    references: list[ParsedReference],
+    symbols_by_name: dict[str, list[str]],
+    index: ImportIndex | None = None,
 ) -> tuple[list[tuple[ParsedReference, str]], int]:
     """참조가 가리키는 대상을 확정한다.
 
     파일 하나만 봐서는 process_payment()가 어느 파일의 함수인지 알 수 없다.
-    레포 전체 심볼과 대조해 후보가 하나뿐일 때만 연결한다.
+    레포 전체 심볼과 대조하고, 후보가 여럿이면 import로 범위를 좁힌다(#20).
 
-    후보가 여럿이면 저장하지 않는다. import를 추출하는 다음 이슈(#20)에서
-    범위를 좁히면 이 중 일부가 살아난다. 틀린 관계를 보여주느니 비워둔다.
+    좁히고도 여럿이면 저장하지 않는다. 틀린 관계를 보여주느니 비워둔다.
     """
+    index = index or ImportIndex()
     resolved: list[tuple[ParsedReference, str]] = []
     skipped = 0
 
     for ref in references:
         candidates = symbols_by_name.get(ref.target_name, [])
+        if len(candidates) > 1:
+            candidates = _narrow(candidates, ref, index)
+
         if len(candidates) == 1:
             resolved.append((ref, candidates[0]))
         else:
@@ -122,15 +231,61 @@ def _resolve_targets(
     return resolved, skipped
 
 
+def _import_references(
+    imports_by_file: dict[str, list[ParsedImport]], modules: dict[str, str]
+) -> list[tuple[str, ParsedImport, str, str]]:
+    """import 관계를 근거로 남긴다. (파일 경로, import, 출발 ident, 도착 ident) 목록.
+
+    PRD가 추적하라고 한 네 가지 관계 중 하나라 버리지 않는다. "이 파일이 왜
+    영향받는다고 판단했는가"의 답이 여기 있고, 나중에 import 기반 영향 분석을
+    붙일 때 파서를 다시 뜯지 않아도 된다.
+
+    다만 그래프 노드로 만들지는 않는다. import는 파일 맨 위, 모듈 레벨에서
+    일어나 출발 심볼이 없고, api-spec §4의 노드 kind는 function|constant|class
+    뿐이다. 외부 라이브러리까지 노드로 만들면 프로젝트 밖을 인덱싱하게 된다.
+    그래서 출발점은 파일을 가리키는 표시(MODULE_IDENT)로 두고, 그래프에 올릴
+    것은 #23에서 실제 심볼로 해석되는 것만 고른다.
+    """
+    rows: list[tuple[str, ParsedImport, str, str]] = []
+    for path, items in imports_by_file.items():
+        source = f"{path}{MODULE_IDENT}"
+        for item in items:
+            target_file = modules.get(item.module)
+
+            if item.origin_name is None:
+                # `import x` — 모듈 자체를 들여온다.
+                target = f"{target_file}{MODULE_IDENT}" if target_file else item.module
+            elif (submodule := modules.get(f"{item.module}.{item.origin_name}")) is not None:
+                # `from src import payment` — 들여온 것이 하위 모듈이다.
+                # 패키지에 __init__.py가 없어 상위가 모듈로 안 잡히는 경우도 여기서 걸린다.
+                target = f"{submodule}{MODULE_IDENT}"
+            elif target_file is not None:
+                # 레포 안의 이름이다. 아직 심볼로 추출되지 않은 상수여도
+                # ident 형식이 같으므로 #22가 붙으면 그대로 이어진다.
+                target = f"{target_file}::{item.origin_name}"
+            else:
+                # 외부 라이브러리. 근거로만 남기고 그래프에는 올리지 않는다.
+                target = f"{item.module}.{item.origin_name}"
+
+            rows.append((path, item, source, target))
+    return rows
+
+
 def _update_reference_counts(db: Session, repo: Repo) -> None:
     """심볼별 피참조 횟수를 채운다.
 
     그래프가 15개를 넘으면 이 값으로 정렬해 자른다 (api-spec §4).
+    그래프에 그려지는 연결만 센다. import는 근거로만 저장하고 노드로 만들지
+    않으므로, 세면 화면에 보이는 개수와 숫자가 어긋난다.
     """
     counts = dict(
         db.execute(
             select(Reference.target_ident, func.count())
-            .where(Reference.repo_id == repo.id, Reference.organization_id == repo.organization_id)
+            .where(
+                Reference.repo_id == repo.id,
+                Reference.organization_id == repo.organization_id,
+                Reference.ref_type != "import",
+            )
             .group_by(Reference.target_ident)
         ).all()
     )
@@ -139,7 +294,7 @@ def _update_reference_counts(db: Session, repo: Repo) -> None:
 
 
 def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
-    """레포를 파싱해 저장하고 (심볼 수, 참조 수)를 돌려준다.
+    """레포를 파싱해 저장하고 (심볼 수, 참조 수)를 돌려준다. 참조는 호출과 import 합이다.
 
     읽기·파싱을 먼저 다 끝내고, 저장은 마지막에 한 트랜잭션으로 한다.
     중간에 실패해도 이전 인덱스가 그대로 남아 화면이 비지 않는다.
@@ -151,6 +306,7 @@ def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
 
     all_symbols: list[ParsedSymbol] = []
     all_references: list[ParsedReference] = []
+    imports_by_file: dict[str, list[ParsedImport]] = {}
     # 파서가 없는 파일도 담는다. 파일 트리와 코드 뷰어는 README도 보여준다.
     read_files: list[tuple[str, str | None, str]] = []
 
@@ -165,13 +321,15 @@ def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
         adapter = get_adapter(relative)
         if adapter is not None:
             try:
-                symbols, references = adapter.parse(relative, content)
+                parsed = adapter.parse(relative, content)
             except Exception:
                 # 파일 하나가 파서를 넘어뜨려도 인덱싱 전체가 실패하면 안 된다.
                 logger.exception("파싱 실패, 건너뜁니다: %s", relative)
             else:
-                all_symbols.extend(symbols)
-                all_references.extend(references)
+                all_symbols.extend(parsed.symbols)
+                all_references.extend(parsed.references)
+                if parsed.imports:
+                    imports_by_file[relative] = parsed.imports
 
         if index % 50 == 0:
             # 진행률만 커밋한다. 새 인덱스는 아직 세션에 넣지 않았으므로
@@ -218,7 +376,10 @@ def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
         if "." in symbol.name:
             symbols_by_name[symbol.name.rsplit(".", 1)[-1]].append(symbol.ident)
 
-    resolved, skipped = _resolve_targets(all_references, symbols_by_name)
+    modules = _module_paths([path for path, _, _ in read_files])
+    index = _build_import_index(imports_by_file, modules)
+
+    resolved, skipped = _resolve_targets(all_references, symbols_by_name, index)
     for ref, target_ident in resolved:
         db.add(
             Reference(
@@ -231,6 +392,20 @@ def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
                 line=ref.line,
             )
         )
+
+    import_rows = _import_references(imports_by_file, modules)
+    for path, item, source_ident, target_ident in import_rows:
+        db.add(
+            Reference(
+                organization_id=repo.organization_id,
+                repo_id=repo.id,
+                source_ident=source_ident,
+                target_ident=target_ident,
+                ref_type="import",
+                path=path,
+                line=item.line,
+            )
+        )
     db.flush()
 
     _update_reference_counts(db, repo)
@@ -241,7 +416,7 @@ def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
     db.commit()
 
     logger.info(
-        "파싱 완료 repo_id=%s 파일=%d 심볼=%d 참조=%d 건너뜀=%d",
-        repo.id, len(read_files), len(all_symbols), len(resolved), skipped,
+        "파싱 완료 repo_id=%s 파일=%d 심볼=%d 호출=%d import=%d 건너뜀=%d",
+        repo.id, len(read_files), len(all_symbols), len(resolved), len(import_rows), skipped,
     )
-    return len(all_symbols), len(resolved)
+    return len(all_symbols), len(resolved) + len(import_rows)

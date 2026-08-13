@@ -35,6 +35,20 @@ DUP_B = "def handle():\n    pass\n"
 CALLER = "def run():\n    return handle()\n"
 
 
+def calls(db_session):
+    """호출 참조만. import 근거는 따로 검사한다."""
+    return db_session.query(Reference).filter_by(ref_type="call").all()
+
+
+def imports(db_session):
+    return db_session.query(Reference).filter_by(ref_type="import").all()
+
+
+def one(rows):
+    assert len(rows) == 1, [f"{r.source_ident} → {r.target_ident}" for r in rows]
+    return rows[0]
+
+
 @pytest.fixture
 def repo_row(db_session):
     org = Organization(name="테스트", slug="test-org")
@@ -109,12 +123,166 @@ def test_이름이_겹치면_저장하지_않는다(db_session, repo_row, tmp_pa
     assert db_session.query(Reference).count() == 0
 
 
+def test_import를_알면_이름이_겹쳐도_대상을_확정한다(db_session, repo_row, tmp_path):
+    """#14에서 동명이인이라 버려지던 호출이 살아난다 (이슈 #20)."""
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def handle():\n    pass\n",
+            "src/legacy.py": "def handle():\n    pass\n",
+            "src/api.py": "from src.payment import handle\n\n\ndef run():\n    return handle()\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    row = one(calls(db_session))
+    assert row.source_ident == "src/api.py::run"
+    assert row.target_ident == "src/payment.py::handle"
+
+
+def test_상대_import도_같은_방식으로_확정한다(db_session, repo_row, tmp_path):
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def handle():\n    pass\n",
+            "src/legacy.py": "def handle():\n    pass\n",
+            "src/api.py": "from .payment import handle\n\n\ndef run():\n    return handle()\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert one(calls(db_session)).target_ident == "src/payment.py::handle"
+
+
+def test_모듈을_거친_호출도_확정한다(db_session, repo_row, tmp_path):
+    """import src.payment 뒤의 payment.handle() 형태."""
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def handle():\n    pass\n",
+            "src/legacy.py": "def handle():\n    pass\n",
+            "src/api.py": "from src import payment\n\n\ndef run():\n    return payment.handle()\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert one(calls(db_session)).target_ident == "src/payment.py::handle"
+
+
+def test_같은_파일에_정의가_있으면_그것을_고른다(db_session, repo_row, tmp_path):
+    """import하지 않은 이상 파이썬은 자기 파일 것을 부른다."""
+    write(
+        tmp_path,
+        {
+            "a.py": "def helper():\n    pass\n\n\ndef run():\n    return helper()\n",
+            "b.py": "def helper():\n    pass\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert one(calls(db_session)).target_ident == "a.py::helper"
+
+
+def test_객체를_거친_호출은_같은_파일_규칙을_쓰지_않는다(db_session, repo_row, tmp_path):
+    """obj.handle()의 handle은 이 파일의 handle이 아니라 obj의 것이다."""
+    write(
+        tmp_path,
+        {
+            "a.py": "def handle():\n    pass\n\n\ndef run(client):\n    return client.handle()\n",
+            "b.py": "def handle():\n    pass\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert calls(db_session) == []
+
+
+def test_외부_라이브러리_import는_확정_근거가_되지_못한다(db_session, repo_row, tmp_path):
+    """레포에 없는 모듈이라 어느 파일 것인지 알려주지 못한다."""
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def get():\n    pass\n",
+            "src/legacy.py": "def get():\n    pass\n",
+            "src/api.py": "import httpx\n\n\ndef run():\n    return httpx.get('/')\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert calls(db_session) == []
+
+
+# ── import 근거 저장 (PRD의 추적 관계 4가지 중 하나) ────────────────────────
+
+
+def test_레포_안의_import는_대상_심볼까지_이어_저장한다(db_session, repo_row, tmp_path):
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def handle():\n    pass\n",
+            "src/api.py": "from src.payment import handle\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    row = one(imports(db_session))
+    assert row.source_ident == "src/api.py::<module>"
+    assert row.target_ident == "src/payment.py::handle"
+    assert row.line == 1
+
+
+def test_외부_라이브러리_import도_근거로_남긴다(db_session, repo_row, tmp_path):
+    """영향 판단의 근거라 버리지 않는다. 다만 그래프 노드가 되지는 않는다."""
+    write(tmp_path, {"src/api.py": "import httpx\nfrom fastapi import Depends\n"})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert {r.target_ident for r in imports(db_session)} == {"httpx", "fastapi.Depends"}
+
+
+def test_모듈을_들여오면_그_파일을_가리킨다(db_session, repo_row, tmp_path):
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def handle():\n    pass\n",
+            "src/api.py": "from src import payment\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert one(imports(db_session)).target_ident == "src/payment.py::<module>"
+
+
+def test_import는_참조_횟수에_섞이지_않는다(db_session, repo_row, tmp_path):
+    """그래프에 그려지는 연결만 센다. 섞이면 화면 숫자와 어긋난다."""
+    write(
+        tmp_path,
+        {
+            "src/payment.py": "def handle():\n    pass\n",
+            "src/api.py": "from src.payment import handle\n\n\ndef run():\n    return handle()\n",
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    # 호출 1건뿐이다. import 1건은 세지 않는다.
+    assert db_session.query(Symbol).filter_by(name="handle").one().reference_count == 1
+
+
 def test_외부_라이브러리_호출은_저장하지_않는다(db_session, repo_row, tmp_path):
     write(tmp_path, {"src/x.py": "import httpx\n\n\ndef fetch():\n    return httpx.get('/')\n"})
 
-    _, references = parse_repo(db_session, repo_row, tmp_path)
+    parse_repo(db_session, repo_row, tmp_path)
 
-    assert references == 0
+    assert calls(db_session) == []
 
 
 def test_재인덱싱하면_이전_결과가_남지_않는다(db_session, repo_row, tmp_path):

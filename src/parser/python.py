@@ -1,13 +1,20 @@
-"""Python 어댑터 (이슈 #14).
+"""Python 어댑터 (이슈 #14, #20).
 
-이번 범위는 함수·메서드 정의와 함수 호출까지다.
-import·전역 상수·클래스 상속은 다음 이슈에서 같은 구조로 붙인다.
+이번 범위는 함수·메서드 정의, 함수 호출, import 의존성까지다.
+전역 상수·클래스 상속은 다음 이슈에서 같은 구조로 붙인다.
 """
 
 import tree_sitter_python
 from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
-from src.parser.base import LanguageAdapter, ParsedReference, ParsedSymbol, enclosing_symbol
+from src.parser.base import (
+    LanguageAdapter,
+    ParsedImport,
+    ParsedReference,
+    ParsedSymbol,
+    ParseResult,
+    enclosing_symbol,
+)
 
 _LANGUAGE = Language(tree_sitter_python.language())
 
@@ -22,6 +29,13 @@ _FUNCTIONS = """
 _CALLS = """
 (call function: (identifier) @callee) @call
 (call function: (attribute attribute: (identifier) @callee)) @call
+"""
+
+# import. 함수 안의 지역 import나 if TYPE_CHECKING 블록 안에 있어도 잡히도록
+# 위치를 지정하지 않는다.
+_IMPORTS = """
+(import_statement) @import
+(import_from_statement) @import
 """
 
 # 파라미터 노드에서 이름을 꺼낼 때 들여다볼 타입.
@@ -118,15 +132,64 @@ def _is_self_call(source_ident: str, target: str) -> bool:
     return target == name.rsplit(".", 1)[-1]
 
 
+def _name_and_alias(source: bytes, node: Node) -> tuple[str | None, str | None]:
+    """import 항목에서 (이름, 별칭)을 꺼낸다. `x as y`면 별칭이 y다."""
+    if node.type == "aliased_import":
+        name_node = node.child_by_field_name("name")
+        alias_node = node.child_by_field_name("alias")
+        name = _text(source, name_node) if name_node else None
+        return name, _text(source, alias_node) if alias_node else None
+    if node.type == "dotted_name":
+        return _text(source, node), None
+    return None, None
+
+
+def _receiver(source: bytes, callee: Node) -> str | None:
+    """`a.b()` 호출에서 앞의 이름 a를 꺼낸다. `b()`나 `a.b.c()`면 None.
+
+    a가 import한 모듈이면 b가 어느 파일의 함수인지 그 자리에서 확정된다.
+    a.b.c()처럼 중간이 낀 경우는 무엇을 거쳐 왔는지 알 수 없어 비워 둔다.
+    """
+    attribute = callee.parent
+    if attribute is None or attribute.type != "attribute":
+        return None
+    obj = attribute.child_by_field_name("object")
+    if obj is None or obj.type != "identifier":
+        return None
+    return _text(source, obj)
+
+
+def _absolute_module(path: str, dots: int, tail: str | None) -> str | None:
+    """상대 import를 절대 모듈 경로로 바꾼다.
+
+    점 하나는 이 파일이 있는 디렉터리, 둘이면 그 위다.
+    `src/api/repos.py`에서 `from .schemas import X`는 `src.api.schemas`가 된다.
+
+    레포 밖으로 올라가는 경로는 확정할 수 없으므로 버린다. 추측으로 연결하지 않는다.
+    """
+    parts = path.split("/")[:-1]  # 파일이 들어 있는 디렉터리
+    up = dots - 1
+    if up:
+        if up > len(parts):
+            return None
+        parts = parts[: len(parts) - up]
+    if tail:
+        parts = parts + tail.split(".")
+    return ".".join(parts) if parts else None
+
+
 class PythonAdapter(LanguageAdapter):
     extensions = (".py",)
 
-    def parse(self, path: str, source: str) -> tuple[list[ParsedSymbol], list[ParsedReference]]:
+    def parse(self, path: str, source: str) -> ParseResult:
         raw = source.encode("utf-8")
         tree = Parser(_LANGUAGE).parse(raw)
         symbols = self._functions(path, raw, tree.root_node)
-        references = self._calls(path, raw, tree.root_node, symbols)
-        return symbols, references
+        return ParseResult(
+            symbols=symbols,
+            references=self._calls(path, raw, tree.root_node, symbols),
+            imports=self._imports(path, raw, tree.root_node),
+        )
 
     def _functions(self, path: str, source: bytes, root: Node) -> list[ParsedSymbol]:
         symbols: list[ParsedSymbol] = []
@@ -151,6 +214,65 @@ class PythonAdapter(LanguageAdapter):
             )
         return symbols
 
+    def _imports(self, path: str, source: bytes, root: Node) -> list[ParsedImport]:
+        """세 가지 형태를 모두 잡는다: `import x` · `from x import y` · `from . import y`.
+
+        `from x import *`는 어떤 이름이 들어왔는지 알 수 없어 건너뛴다.
+        """
+        imports: list[ParsedImport] = []
+        for _, captured in QueryCursor(Query(_LANGUAGE, _IMPORTS)).matches(root):
+            node = captured["import"][0]
+            line = node.start_point[0] + 1
+
+            if node.type == "import_statement":
+                for child in node.children_by_field_name("name"):
+                    module, alias = _name_and_alias(source, child)
+                    if module is None:
+                        continue
+                    # `import a.b`는 이름 a를 들여온다. `as`가 있으면 그 이름이다.
+                    imports.append(
+                        ParsedImport(
+                            local_name=alias or module.split(".")[0],
+                            module=module,
+                            origin_name=None,
+                            line=line,
+                        )
+                    )
+                continue
+
+            module = self._from_module(path, source, node)
+            if module is None:
+                continue
+            for child in node.children_by_field_name("name"):
+                name, alias = _name_and_alias(source, child)
+                if name is None:
+                    continue
+                imports.append(
+                    ParsedImport(
+                        local_name=alias or name,
+                        module=module,
+                        origin_name=name,
+                        line=line,
+                    )
+                )
+        return imports
+
+    def _from_module(self, path: str, source: bytes, node: Node) -> str | None:
+        """`from ... import`의 모듈 경로. 상대 import는 절대 경로로 바꾼다."""
+        module_node = node.child_by_field_name("module_name")
+        if module_node is None:
+            return None
+        if module_node.type == "dotted_name":
+            return _text(source, module_node)
+        if module_node.type == "relative_import":
+            prefix = next((c for c in module_node.children if c.type == "import_prefix"), None)
+            if prefix is None:
+                return None
+            tail_node = next((c for c in module_node.children if c.type == "dotted_name"), None)
+            tail = _text(source, tail_node) if tail_node is not None else None
+            return _absolute_module(path, len(_text(source, prefix)), tail)
+        return None
+
     def _calls(
         self, path: str, source: bytes, root: Node, symbols: list[ParsedSymbol]
     ) -> list[ParsedReference]:
@@ -166,7 +288,8 @@ class PythonAdapter(LanguageAdapter):
                 # 모듈 레벨 호출. 그래프의 출발점이 될 심볼이 없어 저장하지 않는다.
                 continue
 
-            target = _text(source, captured["callee"][0])
+            callee = captured["callee"][0]
+            target = _text(source, callee)
             if _is_self_call(source_ident, target):
                 # 재귀 호출. 자기 자신을 가리키는 간선은 그래프에서 의미가 없다.
                 continue
@@ -178,6 +301,7 @@ class PythonAdapter(LanguageAdapter):
                     ref_type="call",
                     path=path,
                     line=line,
+                    receiver=_receiver(source, callee),
                 )
             )
         return references
