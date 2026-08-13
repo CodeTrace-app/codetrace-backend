@@ -134,6 +134,47 @@ def test_재인덱싱하면_이전_결과가_남지_않는다(db_session, repo_r
     assert db_session.query(Symbol).filter_by(name="process_payment").one().reference_count == 0
 
 
+def test_이름이_겹치는_정의가_있어도_인덱싱이_끝난다(db_session, repo_row, tmp_path):
+    """Symbol에 UniqueConstraint(repo_id, ident)가 있어 겹치면 인덱싱 전체가 실패했다."""
+    overload = (
+        "from typing import overload\n\n\n"
+        "@overload\n"
+        "def send(x: int) -> int: ...\n\n\n"
+        "@overload\n"
+        "def send(x: str) -> str: ...\n\n\n"
+        "def send(x):\n"
+        "    return x\n"
+    )
+    write(tmp_path, {"src/payment.py": PAYMENT, "src/overload.py": overload})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    rows = db_session.query(Symbol).filter_by(name="send").all()
+    assert len(rows) == 1
+    # 마지막 정의(구현부)가 남는다. @overload 스텁이 아니다.
+    assert json.loads(rows[0].params) == ["x"]
+    assert db_session.query(Symbol).filter_by(name="process_payment").all()
+
+
+def test_파싱이_실패해도_이전_인덱스가_남는다(db_session, repo_row, tmp_path, monkeypatch):
+    """지우고 커밋한 뒤 넣으면, 실패 시 이전 인덱스까지 날아가 재인덱싱으로도 복구되지 않았다."""
+    write(tmp_path, {"src/payment.py": PAYMENT, "src/middleware.py": MIDDLEWARE})
+    parse_repo(db_session, repo_row, tmp_path)
+    before = {s.ident for s in db_session.query(Symbol).all()}
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("파싱 도중 실패")
+
+    monkeypatch.setattr("src.indexing.parsing._update_reference_counts", boom)
+
+    with pytest.raises(RuntimeError):
+        parse_repo(db_session, repo_row, tmp_path)
+    db_session.rollback()  # 러너의 _mark_failed가 하는 일
+
+    assert {s.ident for s in db_session.query(Symbol).all()} == before
+    assert db_session.query(SourceFile).count() == 2
+
+
 def test_의존성_디렉터리는_건너뛴다(db_session, repo_row, tmp_path):
     """남의 코드까지 넣으면 그래프가 의미를 잃는다."""
     write(tmp_path, {"src/payment.py": PAYMENT, "node_modules/pkg/index.js": "export const a = 1\n"})

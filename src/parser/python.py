@@ -42,15 +42,51 @@ def _text(source: bytes, node: Node) -> str:
     return source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
 
-def _enclosing_class_name(source: bytes, node: Node) -> str | None:
-    """정의 노드를 감싸는 클래스 이름을 찾는다. 없으면 모듈 레벨 함수다."""
+def _qualifier(source: bytes, node: Node) -> str | None:
+    """정의를 감싸는 클래스·함수 이름을 바깥에서 안쪽 순으로 잇는다.
+
+    클래스 메서드가 "클래스명.메서드명"인 것과 같은 규칙을 중첩 함수에도 적용한다.
+    감싼 쪽 이름을 붙이지 않으면 한 파일 안에서 이름이 같은 중첩 함수끼리 ident가
+    겹치고, Symbol의 UniqueConstraint(repo_id, ident)에 걸려 인덱싱 전체가 실패한다.
+    """
+    names: list[str] = []
     current = node.parent
     while current is not None:
-        if current.type == "class_definition":
+        if current.type in ("class_definition", "function_definition"):
             name_node = current.child_by_field_name("name")
-            return _text(source, name_node) if name_node else None
+            if name_node is not None:
+                names.append(_text(source, name_node))
         current = current.parent
-    return None
+    return ".".join(reversed(names)) or None
+
+
+def _definition_start(func: Node) -> int:
+    """함수의 시작 줄. 데코레이터가 있으면 데코레이터 첫 줄부터다.
+
+    tree-sitter는 데코레이터를 def 바깥의 decorated_definition에 두므로 def 줄만
+    보면 범위에서 빠진다. 근거 연결(git log -L)이 이 범위로 이력을 뒤지기 때문에,
+    빼면 라우트 경로나 인증 데코레이터만 바꾼 커밋이 근거에서 통째로 누락된다.
+    """
+    parent = func.parent
+    if parent is not None and parent.type == "decorated_definition":
+        return parent.start_point[0] + 1
+    return func.start_point[0] + 1
+
+
+def _in_decorator(node: Node) -> bool:
+    """데코레이터 안에서 일어난 호출인지 본다.
+
+    데코레이터 줄이 함수 범위에 들어오면서 @router.get(...) 같은 것도 호출로 잡힌다.
+    이건 함수 본문이 부르는 대상이 아니라 함수에 걸린 장식이므로 그래프에 넣지 않는다.
+    """
+    current: Node | None = node
+    while current is not None:
+        if current.type == "decorator":
+            return True
+        if current.type == "block":  # 함수 본문에 닿았다. 데코레이터 바깥이다.
+            return False
+        current = current.parent
+    return False
 
 
 def _param_names(source: bytes, params_node: Node) -> list[str]:
@@ -98,7 +134,7 @@ class PythonAdapter(LanguageAdapter):
             func = captured["func"][0]
             name = _text(source, captured["name"][0])
 
-            owner = _enclosing_class_name(source, func)
+            owner = _qualifier(source, func)
             full_name = f"{owner}.{name}" if owner else name
 
             symbols.append(
@@ -108,7 +144,7 @@ class PythonAdapter(LanguageAdapter):
                     path=path,
                     kind="function",
                     # tree-sitter의 좌표는 0부터 시작한다. 화면·git은 1부터 센다.
-                    start_line=func.start_point[0] + 1,
+                    start_line=_definition_start(func),
                     end_line=func.end_point[0] + 1,
                     params=_param_names(source, captured["params"][0]),
                 )
@@ -121,8 +157,10 @@ class PythonAdapter(LanguageAdapter):
         references: list[ParsedReference] = []
         for _, captured in QueryCursor(Query(_LANGUAGE, _CALLS)).matches(root):
             call = captured["call"][0]
-            line = call.start_point[0] + 1
+            if _in_decorator(call):
+                continue
 
+            line = call.start_point[0] + 1
             source_ident = enclosing_symbol(line, symbols)
             if source_ident is None:
                 # 모듈 레벨 호출. 그래프의 출발점이 될 심볼이 없어 저장하지 않는다.
