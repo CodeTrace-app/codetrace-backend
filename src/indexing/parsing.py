@@ -118,24 +118,38 @@ def _drop_duplicate_idents(symbols: list[ParsedSymbol]) -> list[ParsedSymbol]:
     return list(by_ident.values())
 
 
-def _module_paths(file_paths: list[str]) -> dict[str, str]:
-    """모듈 경로 → 파일 경로. 레포 안에 실제로 있는 파일만 들어간다.
+# TS/JS의 import는 확장자를 생략한다. './client'가 어느 파일인지 이 순서로 찾는다.
+_TS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx")
 
-    여기 없는 모듈이 외부 라이브러리다. httpx나 jwt는 레포에 파일이 없으므로
-    자연히 걸러진다 (이슈 #20 완료 조건).
+
+def _module_paths(file_paths: list[str]) -> dict[str, str]:
+    """모듈 식별자 → 파일 경로. 레포 안에 실제로 있는 파일만 들어간다.
+
+    파이썬은 점 표기(src.payment), TS/JS는 확장자 없는 경로(src/api/client)를 쓴다.
+    어느 쪽이든 여기 없는 것이 외부 라이브러리다. httpx나 react는 레포에 파일이
+    없으므로 자연히 걸러진다 (이슈 #20 완료 조건).
     """
     modules: dict[str, str] = {}
     for path in file_paths:
-        if not path.endswith(".py"):
+        if path.endswith(".py"):
+            if path == "__init__.py":
+                continue
+            if path.endswith("/__init__.py"):
+                dotted = path[: -len("/__init__.py")].replace("/", ".")
+            else:
+                dotted = path[: -len(".py")].replace("/", ".")
+            if dotted:
+                modules[dotted] = path
             continue
-        if path.endswith("/__init__.py"):
-            dotted = path[: -len("/__init__.py")].replace("/", ".")
-        elif path == "__init__.py":
-            continue
-        else:
-            dotted = path[: -len(".py")].replace("/", ".")
-        if dotted:
-            modules[dotted] = path
+
+        if path.endswith(_TS_SUFFIXES):
+            without_suffix = path.rsplit(".", 1)[0]
+            # 먼저 등록된 것을 남긴다. client.ts와 client/index.ts가 함께 있으면
+            # 확장자만 뗀 경로가 가리키는 client.ts가 우선이다.
+            modules.setdefault(without_suffix, path)
+            # './api'로 폴더를 가리키면 그 안의 index 파일이 대상이다.
+            if without_suffix.endswith("/index"):
+                modules.setdefault(without_suffix[: -len("/index")], path)
     return modules
 
 
@@ -151,6 +165,9 @@ class ImportIndex:
     names: dict[str, dict[str, str]] = field(default_factory=dict)
     # import src.payment as pay → {"pay": "src/payment.py"}
     modules: dict[str, dict[str, str]] = field(default_factory=dict)
+    # 레포 밖에서 들여온 이름. {"src/page.tsx": {"useState", "axios"}}
+    # 이 이름들은 레포 안에 같은 이름이 있어도 그것을 가리키지 않는다.
+    external: dict[str, set[str]] = field(default_factory=dict)
 
 
 def _build_import_index(
@@ -168,6 +185,17 @@ def _build_import_index(
     index = ImportIndex()
     for path, items in imports_by_file.items():
         for item in items:
+            if not item.local_name:
+                # import './setup' 처럼 이름을 들여오지 않는 import. 의존 근거로만 남는다.
+                continue
+
+            if item.module not in modules and f"{item.module}.{item.origin_name}" not in modules:
+                # 레포 밖에서 온 이름이다. react의 useState는 레포 안에 같은 이름의
+                # 함수가 있어도 그것이 아니다. 여기 적어두지 않으면 후보가 하나뿐일 때
+                # 그 이름으로 이어져 없는 관계가 그려진다.
+                index.external.setdefault(path, set()).add(item.local_name)
+                continue
+
             if item.origin_name is None:
                 # `import src.payment` — 이름이 모듈을 가리킨다.
                 target = modules.get(item.module)
@@ -184,6 +212,18 @@ def _build_import_index(
             if target is not None:
                 index.names.setdefault(path, {})[item.local_name] = target
     return index
+
+
+def _is_external(ref: ParsedReference, index: ImportIndex) -> bool:
+    """레포 밖에서 들여온 이름을 쓴 참조인가.
+
+    react의 useState()나 axios.get()은 레포 안에 같은 이름이 있어도 그것이 아니다.
+    후보가 하나뿐이면 확정해버리는 규칙보다 먼저 봐야 한다.
+    """
+    external = index.external.get(ref.path)
+    if not external:
+        return False
+    return (ref.receiver in external) if ref.receiver is not None else (ref.target_name in external)
 
 
 def _narrow(candidates: list[str], ref: ParsedReference, index: ImportIndex) -> list[str]:
@@ -232,6 +272,10 @@ def _resolve_targets(
     skipped = 0
 
     for ref in references:
+        if _is_external(ref, index):
+            skipped += 1
+            continue
+
         candidates = symbols_by_name.get(ref.target_name, [])
         if len(candidates) > 1:
             candidates = _narrow(candidates, ref, index)
