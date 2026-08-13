@@ -75,10 +75,13 @@ def _to_evidence_out(items) -> list[CommitEvidenceOut | PrEvidenceOut]:
     return out
 
 
-def _record_query_log(db: Session, ctx: Ctx, repo: Repo, target: str) -> None:
+def record_query_log(
+    db: Session, ctx: Ctx, repo: Repo, target: str, action: str = "context_view"
+) -> None:
     """질의 이력 (api-spec §6). 조직 관리자가 나중에 조회한다.
 
-    §4에는 안 적혀 있지만 §6의 action="context_view"가 이 API를 가리킨다.
+    §4에는 안 적혀 있지만 §6의 action이 이 API들을 가리킨다.
+    맥락 조회는 context_view, 영향 범위 그래프는 graph_view로 남는다.
     기록에 실패해도 사용자 응답을 막지 않는다.
     """
     try:
@@ -90,7 +93,7 @@ def _record_query_log(db: Session, ctx: Ctx, repo: Repo, target: str) -> None:
                 user_name=(user.name if user else "unknown")[:50],
                 repo_id=repo.id,
                 repo_name=repo.name,
-                action="context_view",
+                action=action,
                 target=target,
             )
         )
@@ -176,5 +179,5 @@ def get_context(
         # 근거가 없을 때 이동 경로를 준다. 근거가 있으면 이동할 이유가 없다.
         parent_module=_parent_module(path) if result_status == "no_history" else None,
     )
-    _record_query_log(db, ctx, repo, target)
+    record_query_log(db, ctx, repo, target)
     return response

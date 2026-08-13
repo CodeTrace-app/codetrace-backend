@@ -343,6 +343,26 @@ def test_파싱이_실패해도_이전_인덱스가_남는다(db_session, repo_r
     assert db_session.query(SourceFile).count() == 2
 
 
+def test_큰_파일은_상한까지만_저장한다(db_session, repo_row, tmp_path):
+    """통째로 버리면 파일 트리에서 사라져 "일부만 표시됨" 안내조차 못 띄운다."""
+    from src.indexing.parsing import MAX_FILE_BYTES
+
+    write(tmp_path, {"big.py": "# " + "a" * MAX_FILE_BYTES})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    row = db_session.query(SourceFile).filter_by(path="big.py").one()
+    assert len(row.content.encode("utf-8")) == MAX_FILE_BYTES
+
+
+def test_바이너리_파일은_저장하지_않는다(db_session, repo_row, tmp_path):
+    (tmp_path / "logo.json").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\xff\xfe")
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert db_session.query(SourceFile).count() == 0
+
+
 def test_의존성_디렉터리는_건너뛴다(db_session, repo_row, tmp_path):
     """남의 코드까지 넣으면 그래프가 의미를 잃는다."""
     write(tmp_path, {"src/payment.py": PAYMENT, "node_modules/pkg/index.js": "export const a = 1\n"})

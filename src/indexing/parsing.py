@@ -57,15 +57,29 @@ def _iter_files(repo_dir: Path):
 
 
 def _read(path: Path) -> str | None:
-    """파일을 읽는다. 바이너리이거나 너무 크면 None.
+    """파일을 읽는다. 바이너리면 None.
+
+    큰 파일은 상한까지만 읽어 저장한다. 통째로 버리면 파일 트리에서 사라져
+    "일부만 표시됨" 안내조차 띄울 수 없다 (api-spec §4의 truncated).
+    잘렸다는 사실은 저장된 크기가 상한에 닿았는지로 판별한다.
 
     인덱싱은 레포 전체를 훑으므로 파일 하나 때문에 멈추면 안 된다.
     """
     try:
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return None
-        return path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_FILE_BYTES + 1)
+    except OSError:
+        return None
+
+    cut = len(raw) > MAX_FILE_BYTES
+    raw = raw[:MAX_FILE_BYTES]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        # 마지막 글자가 잘려서 난 오류면 그 앞까지가 온전한 텍스트다.
+        # 그보다 앞에서 났다면 바이너리 파일이므로 저장하지 않는다.
+        if cut and error.start >= len(raw) - 4:
+            return raw[: error.start].decode("utf-8")
         return None
 
 
