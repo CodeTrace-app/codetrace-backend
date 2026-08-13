@@ -1,7 +1,7 @@
-"""Python 어댑터 (이슈 #14, #20).
+"""Python 어댑터 (이슈 #14, #20, #22).
 
-이번 범위는 함수·메서드 정의, 함수 호출, import 의존성까지다.
-전역 상수·클래스 상속은 다음 이슈에서 같은 구조로 붙인다.
+이번 범위는 함수·메서드 정의, 함수 호출, import 의존성, 전역 상수까지다.
+클래스 상속은 다음 이슈에서 같은 구조로 붙인다.
 """
 
 import tree_sitter_python
@@ -50,6 +50,19 @@ _PARAM_WRAPPERS = (
 
 # 메서드 첫 인자는 호출부에 나타나지 않으므로 시그니처 비교에서 뺀다.
 _IMPLICIT_PARAMS = ("self", "cls")
+
+# 상수 참조를 찾을 때 훑는 이름. 어느 것이 상수인지는 이름만 보고 정하고,
+# 실제로 그 상수가 어느 파일 것인지는 레포 전체를 아는 인덱싱 단계가 확정한다.
+_IDENTIFIERS = "(identifier) @name"
+
+
+def _is_constant_name(name: str) -> bool:
+    """상수로 볼 이름인가. 대문자와 밑줄로만 된 이름이다.
+
+    지역 변수와 구분할 방법이 이름밖에 없다 (이슈 #22). 파이썬이 상수를
+    문법으로 구분하지 않으므로, 관례를 따르는 이름만 상수로 본다.
+    """
+    return name.isupper() and any(char.isalpha() for char in name)
 
 
 def _text(source: bytes, node: Node) -> str:
@@ -144,6 +157,43 @@ def _name_and_alias(source: bytes, node: Node) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _is_assignment_target(node: Node) -> bool:
+    """`TIMEOUT = 10`의 왼쪽처럼 그 이름이 만들어지는 자리인가.
+
+    노드 비교는 ==로 한다. tree-sitter는 필드를 읽을 때마다 새 래퍼 객체를
+    돌려주므로 is로 비교하면 같은 노드인데도 항상 거짓이 된다.
+    """
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "assignment":
+        return parent.child_by_field_name("left") == node
+    if parent.type in ("pattern_list", "tuple_pattern"):
+        # A, B = 1, 2 의 왼쪽
+        grandparent = parent.parent
+        return grandparent is not None and grandparent.type == "assignment"
+    return False
+
+
+def _is_borrowed_name(node: Node) -> bool:
+    """이 파일의 이름이 아닌 자리인가.
+
+    settings.SECRET_KEY의 뒷부분은 남의 객체 속성이고, import 구문 안의 이름은
+    참조가 아니라 들여오는 선언이다. 참조로 세면 없는 관계가 그려진다.
+    """
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "attribute":
+        return parent.child_by_field_name("attribute") == node
+    return parent.type in (
+        "import_statement",
+        "import_from_statement",
+        "aliased_import",
+        "dotted_name",
+    )
+
+
 def _receiver(source: bytes, callee: Node) -> str | None:
     """`a.b()` 호출에서 앞의 이름 a를 꺼낸다. `b()`나 `a.b.c()`면 None.
 
@@ -184,12 +234,116 @@ class PythonAdapter(LanguageAdapter):
     def parse(self, path: str, source: str) -> ParseResult:
         raw = source.encode("utf-8")
         tree = Parser(_LANGUAGE).parse(raw)
-        symbols = self._functions(path, raw, tree.root_node)
+
+        # 함수만 넘긴다. 참조의 출발점은 함수여야 한다 — 모듈 레벨에서 일어난 것은
+        # 그래프에 올릴 출발 노드가 없다 (#14에서 정한 규칙).
+        functions = self._functions(path, raw, tree.root_node)
+        constants = self._constants(path, raw, tree.root_node)
+
         return ParseResult(
-            symbols=symbols,
-            references=self._calls(path, raw, tree.root_node, symbols),
+            symbols=functions + constants,
+            references=(
+                self._calls(path, raw, tree.root_node, functions)
+                + self._constant_refs(path, raw, tree.root_node, functions)
+            ),
             imports=self._imports(path, raw, tree.root_node),
         )
+
+    def _constants(self, path: str, source: bytes, root: Node) -> list[ParsedSymbol]:
+        """모듈 최상위의 대문자 이름을 상수로 잡는다.
+
+        잡는 형태:
+            TIMEOUT = 30            값이 있는 대입
+            TIMEOUT: int = 30       타입을 붙인 대입
+            TIMEOUT = DEFAULT = 30  사슬 대입 (양쪽 다)
+            WIDTH, HEIGHT = 10, 20  튜플 대입 (양쪽 다)
+            TIMEOUT = get_value()   오른쪽이 무엇이든 상관없다
+
+        잡지 않는 형태:
+            TIMEOUT: int            값이 없는 선언. 상수가 아니라 타입 선언이다
+            if x: TIMEOUT = 1       최상위가 아니다. 조건에 따라 달라지는 값이다
+            class C: DEFAULT = 1    클래스 속성이지 전역 상수가 아니다
+            def f(): MAX = 1        지역 변수다
+        """
+        constants: list[ParsedSymbol] = []
+        for statement in root.named_children:
+            if statement.type != "expression_statement":
+                continue
+            for child in statement.named_children:
+                assignment: Node | None = child
+                while assignment is not None and assignment.type == "assignment":
+                    right = assignment.child_by_field_name("right")
+                    left = assignment.child_by_field_name("left")
+                    if right is None or left is None:
+                        # 값이 없는 선언(TIMEOUT: int)은 상수 정의가 아니다.
+                        break
+
+                    # A = 1 과 A, B = 1, 2 를 모두 받는다.
+                    targets = [left] if left.type == "identifier" else list(left.named_children)
+                    for target in targets:
+                        if target.type != "identifier":
+                            continue
+                        name = _text(source, target)
+                        if not _is_constant_name(name):
+                            continue
+                        constants.append(
+                            ParsedSymbol(
+                                ident=f"{path}::{name}",
+                                name=name,
+                                path=path,
+                                kind="constant",
+                                start_line=assignment.start_point[0] + 1,
+                                end_line=assignment.end_point[0] + 1,
+                            )
+                        )
+
+                    # 사슬 대입(A = B = 1)은 오른쪽에 또 대입이 온다.
+                    assignment = right if right.type == "assignment" else None
+        return constants
+
+    def _constant_refs(
+        self, path: str, source: bytes, root: Node, symbols: list[ParsedSymbol]
+    ) -> list[ParsedReference]:
+        """함수 안에서 쓰인 대문자 이름을 상수 참조로 남긴다.
+
+        이 파일의 상수인지 다른 파일 것인지는 여기서 알 수 없다. 이름만 남기고
+        대조는 인덱싱 단계가 한다. 확정되지 않으면 저장되지 않는다.
+
+        함수가 자기 안에서 만든 대문자 이름은 지역 변수다. 그 함수의 참조에서
+        빼지 않으면 다른 파일의 같은 이름 상수로 잘못 이어질 수 있다.
+        """
+        references: list[ParsedReference] = []
+        assigned_locally: set[tuple[str, str]] = set()
+
+        for _, captured in QueryCursor(Query(_LANGUAGE, _IDENTIFIERS)).matches(root):
+            node = captured["name"][0]
+            name = _text(source, node)
+            if not _is_constant_name(name) or _is_borrowed_name(node):
+                continue
+
+            line = node.start_point[0] + 1
+            source_ident = enclosing_symbol(line, symbols)
+            if source_ident is None:
+                # 모듈 레벨. 상수 정의 자리이거나 상수끼리의 참조라 출발점이 없다.
+                continue
+
+            if _is_assignment_target(node):
+                assigned_locally.add((source_ident, name))
+                continue
+
+            references.append(
+                ParsedReference(
+                    source_ident=source_ident,
+                    target_name=name,
+                    ref_type="constant",
+                    path=path,
+                    line=line,
+                )
+            )
+
+        return [
+            ref for ref in references if (ref.source_ident, ref.target_name) not in assigned_locally
+        ]
 
     def _functions(self, path: str, source: bytes, root: Node) -> list[ParsedSymbol]:
         symbols: list[ParsedSymbol] = []

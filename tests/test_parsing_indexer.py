@@ -218,6 +218,50 @@ def test_외부_라이브러리_import는_확정_근거가_되지_못한다(db_s
     assert calls(db_session) == []
 
 
+def test_상수_참조를_저장한다(db_session, repo_row, tmp_path):
+    """데모 시안의 payment_service → TIMEOUT_SECONDS 연결이 이것이다 (이슈 #22)."""
+    write(
+        tmp_path,
+        {
+            "src/config.py": "TIMEOUT_SECONDS = 10\n",
+            "src/payment.py": (
+                "from src.config import TIMEOUT_SECONDS\n\n\n"
+                "def process():\n"
+                "    return TIMEOUT_SECONDS\n"
+            ),
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    constant = db_session.query(Symbol).filter_by(kind="constant").one()
+    assert constant.ident == "src/config.py::TIMEOUT_SECONDS"
+
+    row = one(db_session.query(Reference).filter_by(ref_type="constant").all())
+    assert row.source_ident == "src/payment.py::process"
+    assert row.target_ident == "src/config.py::TIMEOUT_SECONDS"
+    # 그래프의 접기 기준에 상수도 함께 잡힌다
+    assert constant.reference_count == 1
+
+
+def test_상수_참조도_이름이_겹치면_import로_좁힌다(db_session, repo_row, tmp_path):
+    write(
+        tmp_path,
+        {
+            "src/config.py": "TIMEOUT = 10\n",
+            "src/legacy.py": "TIMEOUT = 99\n",
+            "src/payment.py": (
+                "from src.config import TIMEOUT\n\n\ndef process():\n    return TIMEOUT\n"
+            ),
+        },
+    )
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    row = one(db_session.query(Reference).filter_by(ref_type="constant").all())
+    assert row.target_ident == "src/config.py::TIMEOUT"
+
+
 # ── import 근거 저장 (PRD의 추적 관계 4가지 중 하나) ────────────────────────
 
 
