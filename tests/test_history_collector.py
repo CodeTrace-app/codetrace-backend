@@ -4,6 +4,7 @@ git은 실제로 돌리고(임시 저장소), GitHub API만 모킹한다.
 근거 연결이 맞는지가 git log -L 결과에 달려 있어서 git을 가짜로 두면 검증이 안 된다.
 """
 
+import json
 import subprocess
 
 import pytest
@@ -12,14 +13,15 @@ from src.db.models import Commit, Organization, PullRequest, Repo, Symbol, Symbo
 from src.indexing import history
 
 
-def _collect_and_link(db_session, repo_row, installation_id: int = 1):
-    """수집과 근거 연결을 이어서 실행한다.
+def _index(db_session, repo_row, installation_id: int = 1):
+    """수집 → 근거 연결 → 요약을 이어서 실행한다.
 
-    실제 인덱싱(run_indexing)은 이 사이에 파싱을 끼워 심볼을 만든다. 근거 연결은
-    심볼이 있어야 동작하므로, 심볼을 직접 넣어 검사하는 테스트에서는 두 단계만 부른다.
+    실제 인덱싱(run_indexing)은 수집과 근거 연결 사이에 파싱을 끼워 심볼을 만든다.
+    심볼을 직접 넣어 검사하는 테스트에서는 그 단계만 건너뛴다.
     """
     context = history.collect_repo_history(db_session, repo_row, installation_id=installation_id)
     history.link_symbol_evidence(db_session, repo_row, context)
+    history.generate_repo_summaries(db_session, repo_row)
     return context
 
 
@@ -78,6 +80,22 @@ def fake_github(monkeypatch, source_repo, tmp_path):
         return dest
 
     monkeypatch.setattr(history.git_history, "ensure_clone", fake_clone)
+
+    # 요약 단계가 진짜 OpenAI를 부르면 테스트가 네트워크와 비용에 묶인다.
+    # 이 파일은 근거 연결을 검증하므로 요약은 형식만 맞는 응답으로 대신한다.
+    monkeypatch.setattr(
+        "src.llm.summarizer.complete",
+        lambda system, user: json.dumps(
+            {
+                "status": "ok",
+                "sentences": [{"text": "근거에 따라 변경됐다.", "evidence": ["e1"]}],
+                "used": ["e1"],
+                "dropped": [],
+                "conflict_sides": None,
+            },
+            ensure_ascii=False,
+        ),
+    )
     monkeypatch.setattr(
         history,
         "get_repo",
@@ -110,7 +128,7 @@ def fake_github(monkeypatch, source_repo, tmp_path):
 
 
 def test_커밋을_모두_저장한다(db_session, repo_row, fake_github):
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _index(db_session, repo_row)
 
     commits = db_session.query(Commit).all()
     assert len(commits) == 3
@@ -120,7 +138,7 @@ def test_커밋을_모두_저장한다(db_session, repo_row, fake_github):
 
 
 def test_PR과_리뷰_코멘트를_저장한다(db_session, repo_row, fake_github):
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _index(db_session, repo_row)
 
     pr = db_session.query(PullRequest).one()
     assert pr.number == 201
@@ -137,7 +155,7 @@ def test_대표_언어와_기본_브랜치를_GitHub에서_채운다(db_session,
     assert repo_row.language is None
     assert repo_row.default_branch == "main"
 
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _index(db_session, repo_row)
 
     assert repo_row.language == "Python"
     assert repo_row.default_branch == "develop"
@@ -159,7 +177,7 @@ def test_심볼_근거에_포맷팅에_가려질_커밋들이_모두_연결된�
     )
     db_session.commit()
 
-    _collect_and_link(db_session, repo_row)
+    _index(db_session, repo_row)
 
     evidences = db_session.query(SymbolEvidence).filter_by(symbol_ident="auth.py::verify").all()
     commit_titles = {
@@ -186,7 +204,7 @@ def test_커밋_제목의_PR_번호로_PR_근거도_연결된다(db_session, rep
     )
     db_session.commit()
 
-    _collect_and_link(db_session, repo_row)
+    _index(db_session, repo_row)
 
     pr_evidences = db_session.query(SymbolEvidence).filter_by(kind="pr").all()
     assert len(pr_evidences) == 1
@@ -237,7 +255,7 @@ def test_PR_커밋_목록으로도_PR_근거가_붙는다(db_session, repo_row, 
     ).stdout.split()[-1]
     monkeypatch.setattr(history, "list_pr_commits", lambda i, f, n: [{"sha": oldest}])
 
-    _collect_and_link(db_session, repo_row)
+    _index(db_session, repo_row)
 
     pr_evidences = db_session.query(SymbolEvidence).filter_by(kind="pr").all()
     assert len(pr_evidences) == 1
@@ -256,15 +274,15 @@ def test_봇_코멘트는_리뷰_발췌로_뽑지_않는다():
 
 def test_심볼이_없으면_근거를_만들지_않는다(db_session, repo_row, fake_github):
     """분석팀 파서(#20)가 아직 안 붙은 상태에서도 수집은 끝나야 한다."""
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _index(db_session, repo_row)
 
     assert db_session.query(SymbolEvidence).count() == 0
     assert db_session.query(Commit).count() == 3
 
 
 def test_재수집해도_커밋이_중복되지_않는다(db_session, repo_row, fake_github):
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
-    history.collect_repo_history(db_session, repo_row, installation_id=1)
+    _index(db_session, repo_row)
+    _index(db_session, repo_row)
 
     assert db_session.query(Commit).count() == 3
     assert db_session.query(PullRequest).count() == 1

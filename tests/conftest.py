@@ -31,7 +31,9 @@ def db_session():
         poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
-    session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)()
+    # 운영(src/db/session.py)과 같은 설정을 쓴다. expire_on_commit이 다르면
+    # commit 뒤 객체가 만료되며 생기는 재조회·만료 버그를 테스트가 영영 못 잡는다.
+    session = sessionmaker(bind=engine, autoflush=False)()
     try:
         yield session
     finally:
