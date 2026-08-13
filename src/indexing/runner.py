@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from src.db.models import Repo
 from src.db.session import SessionLocal
-from src.indexing.history import collect_repo_history, link_symbol_evidence
+from src.indexing.history import collect_repo_history, generate_repo_summaries, link_symbol_evidence
 from src.indexing.parsing import parse_repo
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,13 @@ def run_indexing(repo_id: int, organization_id: int, installation_id: int) -> No
     """
     db = SessionLocal()
     try:
-        repo = db.get(Repo, repo_id)
+        try:
+            repo = db.get(Repo, repo_id)
+        except Exception:
+            # 여기서 터지면(커넥션 풀 고갈 등) 상태가 collecting에 남고 재인덱싱은 409로 막힌다.
+            logger.exception("인덱싱 시작 실패: repo_id=%s", repo_id)
+            _mark_failed(db, repo_id)
+            return
         if repo is None or repo.organization_id != organization_id:
             return
 
@@ -64,6 +70,11 @@ def run_indexing(repo_id: int, organization_id: int, installation_id: int) -> No
 
             # 3) 근거 연결 — 심볼마다 git log -L로 커밋·PR을 붙인다.
             link_symbol_evidence(db, repo, context)
+
+            # 4) 배경 요약 — 붙은 근거를 LLM으로 서술한다 (이슈 #28).
+            #    근거가 있어야 하므로 3)보다 뒤여야 한다.
+            generate_repo_summaries(db, repo)
+
 
             repo.indexing_status = "done"
             repo.last_indexed_at = datetime.now(timezone.utc)

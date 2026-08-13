@@ -4,22 +4,37 @@
 """
 
 from datetime import datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
 
 from src.db.models import Organization, Repo, User
 
 
+def _fits_bcrypt(value: str) -> str:
+    """bcrypt가 처리할 수 있는 길이인지 본다.
+
+    bcrypt는 72바이트를 넘는 부분을 조용히 버린다. 글자 수만 제한하면
+    한글이나 이모지가 섞인 비밀번호는 뒷부분이 검증에 반영되지 않는다
+    (한글 한 글자가 UTF-8로 3바이트라 24자만 넘어도 한도에 닿는다).
+    """
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("비밀번호가 너무 깁니다 (한글은 한 글자가 3바이트로 계산됩니다)")
+    return value
+
+
+BcryptPassword = Annotated[str, AfterValidator(_fits_bcrypt)]
+
+
 class SignupRequest(BaseModel):
     email: EmailStr
-    # bcrypt는 72바이트를 넘는 입력을 처리하지 못한다.
-    password: str = Field(min_length=8, max_length=64)
+    password: BcryptPassword = Field(min_length=8)
     name: str = Field(min_length=1, max_length=50)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(max_length=64)
+    password: BcryptPassword
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -77,11 +92,43 @@ class MeOut(BaseModel):
     organization: OrganizationOut | None = None
 
 
+class InquiryCreateRequest(BaseModel):
+    organization_name: str = Field(min_length=1, max_length=100)
+    contact_name: str = Field(min_length=1, max_length=50)
+    contact: str = Field(min_length=1, max_length=100)
+    # 요금제 화면의 세 플랜. 다른 값이 오면 접수 단계에서 막는다.
+    plan: Literal["starter", "team", "business"]
+
+
+class InquiryCreatedOut(BaseModel):
+    id: int
+    message: str
+
+
+class PlanOut(BaseModel):
+    """관리자 설정 화면의 현재 요금제."""
+
+    plan: str
+    price_krw: int
+    repo_limit: int
+    repos_used: int
+
+
 class RepoCreateRequest(BaseModel):
-    # "소유자/레포" 형식만 받는다. 이 값이 클론 경로와 GitHub API 경로에 그대로 들어가서,
-    # ".."이나 슬래시가 섞이면 의도하지 않은 디렉터리·엔드포인트를 가리킬 수 있다.
-    # 각 조각 100자 제한은 Repo.name(String(100))에 맞춘 것이다.
-    github_full_name: str = Field(pattern=r"^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$")
+    """레포 등록 요청.
+
+    "소유자/레포" 형식만 받는다. 이 값이 클론 경로와 GitHub API 경로에 그대로 들어가서,
+    ".."이 섞이면 의도하지 않은 엔드포인트를 가리킨다 (httpx가 dot segment를 정규화한다).
+    각 조각은 영숫자로 시작하게 해서 ".."과 "."을 원천 차단한다.
+    조각당 100자는 Repo.name(String(100))에, 전체 200자는
+    Repo.github_full_name(String(200))에 맞춘 것이다. 조각 길이만 막으면
+    201자가 통과해 저장 시점에 500이 난다.
+    """
+
+    github_full_name: str = Field(
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$",
+    )
 
 
 class RepoProgressOut(BaseModel):
@@ -115,8 +162,11 @@ class RepoOut(BaseModel):
 
     @classmethod
     def of(cls, repo: Repo) -> "RepoOut":
+        # 진행 중일 때만 progress를 준다 (api-spec §3). done·failed인데 값이 남아 있으면
+        # 실패한 카드에 100% 진행바가 뜬다. DB에 남은 값이 어떻든 여기서 계약을 지킨다.
+        in_progress = repo.indexing_status in ("collecting", "parsing")
         progress = None
-        if repo.progress_total is not None:
+        if in_progress and repo.progress_total is not None:
             progress = RepoProgressOut(current=repo.progress_current or 0, total=repo.progress_total)
         return cls(
             id=repo.id,
@@ -148,3 +198,52 @@ class RepoListOut(BaseModel):
 class ReindexOut(BaseModel):
     id: int
     indexing_status: str
+
+
+# ---------------------------------------------------------------- 맥락 (api-spec §4)
+
+
+class FunctionOut(BaseModel):
+    name: str
+    path: str
+    start_line: int
+    end_line: int
+
+
+class CommitEvidenceOut(BaseModel):
+    """커밋 근거. PR 근거와 필드 구성이 다르므로 모델을 나눈다.
+
+    하나로 합쳐 null을 섞어 내보내면 프론트 목데이터와 어긋난다 (api-spec §4).
+    """
+
+    kind: Literal["commit"] = "commit"
+    sha: str
+    title: str
+    author: str
+    date: datetime
+    url: str
+
+
+class PrEvidenceOut(BaseModel):
+    kind: Literal["pr"] = "pr"
+    number: int
+    title: str
+    date: datetime | None
+    url: str
+    review_excerpt: str | None
+
+
+class ParentModuleOut(BaseModel):
+    path: str
+    name: str
+
+
+class ContextOut(BaseModel):
+    """맥락 패널 응답. 필드 6개 고정 — 추가하면 계약 위반이다."""
+
+    function: FunctionOut
+    status: Literal["ok", "no_history", "conflicting"]
+    summary: str | None
+    evidence: list[CommitEvidenceOut | PrEvidenceOut]
+    evidence_truncated: bool
+    parent_module: ParentModuleOut | None

@@ -7,6 +7,7 @@
     클론 → 커밋 수집 → PR·리뷰 수집 → 심볼별 git log -L로 근거 연결
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,11 +16,18 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from src.config import settings
-from src.db.models import Commit, PullRequest, Repo, Symbol, SymbolEvidence
+from src.db.models import Commit, PullRequest, Repo, SourceFile, Symbol, SymbolEvidence, SymbolSummary
 from src.db.query import query
 from src.github import git_history
 from src.github.app_auth import get_installation_token
 from src.github.client import get_repo, list_pr_comments, list_pr_commits, list_pull_requests
+from src.llm.summarizer import SNIPPET_MAX_CHARS, SNIPPET_MAX_LINES, generate_summary
+
+logger = logging.getLogger(__name__)
+
+# 요약이 이만큼 연속으로 실패하면 나머지 심볼은 포기한다. 키가 없거나 OpenAI가 죽은 상황에서
+# 심볼마다 최대 60초씩 기다리며 끝까지 도는 걸 막는다.
+_MAX_CONSECUTIVE_SUMMARY_FAILURES = 5
 
 # "Merge pull request #12 from ..." — 머지 커밋이 어느 PR에서 왔는지 알려준다.
 _MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b")
@@ -149,6 +157,7 @@ def _save_pull_requests(
         row.merged_at = _parse_github_time(payload.get("merged_at"))
         row.review_excerpt = excerpt
         row.review_comment_count = len(comments)
+        row.url = payload["html_url"]
         saved[number] = row
 
         for commit in list_pr_commits(installation_id, repo.github_full_name, number):
@@ -198,6 +207,15 @@ def _link_symbol_evidence(
     # 재인덱싱은 전체 재수집이므로 이전 근거를 지우고 다시 만든다.
     for stale in db.scalars(query(SymbolEvidence, repo.organization_id).where(SymbolEvidence.repo_id == repo.id)):
         db.delete(stale)
+    # 사라진 심볼의 요약만 지운다. 남아 있는 심볼의 요약은 generate_repo_summaries가
+    # 심볼 단위로 갈아끼운다 — 여기서 전부 지우면 그 뒤 LLM이 죽었을 때
+    # 멀쩡하던 요약까지 통째로 날아가고 인덱싱은 성공으로 끝난다.
+    live_idents = {s.ident for s in symbols}
+    for stale_summary in db.scalars(
+        query(SymbolSummary, repo.organization_id).where(SymbolSummary.repo_id == repo.id)
+    ):
+        if stale_summary.symbol_ident not in live_idents:
+            db.delete(stale_summary)
     db.flush()
 
     repo.progress_current = 0
@@ -249,6 +267,99 @@ def _link_symbol_evidence(
     return linked
 
 
+def generate_repo_summaries(db: Session, repo: Repo) -> int:
+    """근거가 붙은 심볼들의 배경 요약을 미리 만들어 저장한다 (이슈 #28).
+
+    사용자가 함수를 클릭할 때 LLM 왕복을 기다리지 않게 하려고 인덱싱 중에 만든다.
+    근거가 없는 심볼은 summarize()가 LLM을 부르지 않고 no_history로 끝내므로 비용이 들지 않는다.
+
+    요약 실패가 인덱싱 전체를 실패시키면 안 된다. 커밋·PR 수집은 이미 끝났고 그것만으로도
+    근거 목록은 화면에 나온다. 그래서 심볼마다 개별적으로 예외를 삼킨다.
+    """
+    symbols = list(db.scalars(query(Symbol, repo.organization_id).where(Symbol.repo_id == repo.id)))
+    if not symbols:
+        return 0
+
+    # 이 단계는 심볼마다 LLM 왕복이라 가장 오래 걸린다. 화면에 "수집 중"으로 남겨두면
+    # 사용자가 몇 분 동안 멈춘 걸로 본다 (api-spec §3의 collecting -> parsing -> done).
+    repo.indexing_status = "parsing"
+    repo.progress_current = 0
+    repo.progress_total = len(symbols)
+    db.commit()
+
+    generated = 0
+    consecutive_failures = 0
+    snippet_cache: dict[str, str | None] = {}
+    for index, symbol in enumerate(symbols, start=1):
+        try:
+            # 근거가 방금 새로 만들어졌으므로 옛 요약은 그 근거를 인용한 게 아니다.
+            # 심볼 단위로 지우고 다시 만든다. 실패하면 그 심볼만 요약이 비고,
+            # API는 "근거는 있는데 요약은 아직 없음"으로 정직하게 답한다.
+            _delete_summary(db, repo, symbol.ident)
+            snippet = _read_snippet(db, repo, symbol, snippet_cache)
+            if generate_summary(db, repo, symbol, snippet) is not None:
+                generated += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+        except Exception:
+            logger.exception("요약 생성 실패, 건너뜀: %s", symbol.ident)
+            db.rollback()
+            consecutive_failures += 1
+
+        # 키가 잘못됐거나 OpenAI가 죽었으면 심볼 수만큼 계속 두드려봐야 소용없다.
+        # 호출마다 최대 60초라 심볼이 많으면 인덱싱이 몇 시간씩 잡힌다.
+        if consecutive_failures >= _MAX_CONSECUTIVE_SUMMARY_FAILURES:
+            logger.warning(
+                "요약 생성이 %d회 연속 실패해 중단합니다 (%d/%d번째 심볼)",
+                consecutive_failures,
+                index,
+                len(symbols),
+            )
+            break
+
+        if index % 10 == 0:
+            repo.progress_current = index
+            db.commit()
+
+    # 연속 실패로 중단했다면 처리한 만큼만 반영한다. index를 끝까지 채우면
+    # 처리하다 만 상태를 100%로 보여줘 사용자가 완료로 착각한다.
+    repo.progress_current = index if consecutive_failures >= _MAX_CONSECUTIVE_SUMMARY_FAILURES else len(symbols)
+    db.commit()
+    return generated
+
+
+def _delete_summary(db: Session, repo: Repo, symbol_ident: str) -> None:
+    row = db.scalar(
+        query(SymbolSummary, repo.organization_id)
+        .where(SymbolSummary.repo_id == repo.id)
+        .where(SymbolSummary.symbol_ident == symbol_ident)
+    )
+    if row is not None:
+        db.delete(row)
+        db.flush()
+
+
+def _read_snippet(db: Session, repo: Repo, symbol: Symbol, cache: dict[str, str | None]) -> str:
+    """심볼의 코드 조각. 파일 전체는 절대 넘기지 않는다 (src/llm/__init__.py의 전송 규칙).
+
+    같은 파일에 심볼이 수십 개씩 있으므로 파일 내용은 경로별로 한 번만 읽는다.
+    """
+    if symbol.path not in cache:
+        source = db.scalar(
+            query(SourceFile, repo.organization_id)
+            .where(SourceFile.repo_id == repo.id)
+            .where(SourceFile.path == symbol.path)
+        )
+        cache[symbol.path] = source.content if source else None
+
+    content = cache[symbol.path]
+    if content is None:
+        return ""
+    lines = content.splitlines()[symbol.start_line - 1 : symbol.end_line]
+    return "\n".join(lines[:SNIPPET_MAX_LINES])[:SNIPPET_MAX_CHARS]
+
+
 def _save_repo_metadata(db: Session, repo: Repo, installation_id: int) -> None:
     """대표 언어와 기본 브랜치를 채운다.
 
@@ -275,14 +386,22 @@ class HistoryContext:
     pr_by_sha: dict[str, PullRequest]
 
 
+def _repo_clone_dir(repo: Repo) -> Path:
+    """클론 위치. 레포 id로 이름 짓는다.
+
+    full_name의 "/"를 "__"로 바꾸면 acme/pay__api와 acme__pay/api가 같은 디렉터리를 쓴다.
+    그러면 두 번째 인덱싱이 첫 번째 클론의 remote를 바꿔치기해서 엉뚱한 레포의 커밋이 저장된다.
+    """
+    return _clone_root() / str(repo.organization_id) / str(repo.id)
+
+
 def collect_repo_history(db: Session, repo: Repo, installation_id: int) -> HistoryContext:
     """레포 하나의 이력을 수집한다. 상태 전이는 호출자(run_indexing)가 맡는다."""
     token = get_installation_token(installation_id)
-    repo_dir = _clone_root() / str(repo.organization_id) / repo.github_full_name.replace("/", "__")
+    repo_dir = _repo_clone_dir(repo)
     git_history.ensure_clone(repo.github_full_name, token, repo_dir)
 
     _save_repo_metadata(db, repo, installation_id)
-
     commits_by_sha = _save_commits(db, repo, git_history.list_commits(repo_dir))
     prs_by_number, pr_by_sha = _save_pull_requests(db, repo, installation_id)
     return HistoryContext(repo_dir, commits_by_sha, prs_by_number, pr_by_sha)

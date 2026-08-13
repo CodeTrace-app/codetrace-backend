@@ -4,9 +4,17 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.auth import Ctx, create_token, current_user, get_db, hash_password, verify_password
+from src.auth import (
+    Ctx,
+    create_token,
+    current_user,
+    get_db,
+    hash_password,
+    verify_password_constant_time,
+)
 from src.db.models import Organization, User
 from src.schemas import LoginRequest, MeOut, OrganizationOut, SessionOut, SignupRequest, UserOut
 
@@ -32,10 +40,6 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> SessionOut:
     이 시점에는 조직이 없다. 응답의 organization이 null이면
     프론트는 조직 생성 화면으로 보낸다.
     """
-    exists = db.scalar(select(User).where(User.email == payload.email))
-    if exists:
-        raise HTTPException(status.HTTP_409_CONFLICT, "이미 가입된 이메일입니다")
-
     user = User(
         email=payload.email,
         password_hash=hash_password(payload.password),
@@ -43,7 +47,14 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> SessionOut:
         role="admin",  # 조직을 만드는 사람이 관리자가 된다
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 미리 조회해서 막아도 두 요청이 동시에 들어오면 둘 다 통과한다.
+        # 이메일 unique 제약이 최종 판정이므로 그 실패를 409로 옮긴다.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "이미 가입된 이메일입니다") from None
+
     db.refresh(user)
     return _session(user, None)
 
@@ -51,8 +62,14 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> SessionOut:
 @router.post("/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> SessionOut:
     user = db.scalar(select(User).where(User.email == payload.email))
-    if user is None or not verify_password(payload.password, user.password_hash):
+
+    # 계정이 없어도 해시 검증을 태워 응답 시간을 맞춘다.
+    # 시간 차이만으로 가입된 이메일인지 알아낼 수 있기 때문이다.
+    if not verify_password_constant_time(
+        payload.password, user.password_hash if user else None
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "이메일 또는 비밀번호가 올바르지 않습니다")
+    assert user is not None
 
     org = db.get(Organization, user.organization_id) if user.organization_id else None
     return _session(user, org)

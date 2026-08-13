@@ -17,6 +17,7 @@ API를 만드는 모든 담당자는 여기 있는 의존성을 써서 현재 �
         ...
 """
 
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -68,6 +69,23 @@ def hash_password(raw: str) -> str:
 
 
 def verify_password(raw: str, hashed: str) -> bool:
+    return _pwd.verify(raw, hashed)
+
+
+# 없는 계정으로 로그인할 때도 해시 검증을 한 번 태우기 위한 값.
+# 이 해시와는 어떤 비밀번호도 맞지 않는다.
+_DUMMY_HASH = _pwd.hash(secrets.token_urlsafe(32))
+
+
+def verify_password_constant_time(raw: str, hashed: str | None) -> bool:
+    """계정이 없어도 해시 검증에 같은 시간을 쓴다.
+
+    계정이 없을 때 곧바로 실패를 돌려주면, 응답이 0.001초와 0.2초로 갈린다.
+    이메일 목록을 넣고 응답 시간만 재도 어느 주소가 가입돼 있는지 알아낼 수 있다.
+    """
+    if hashed is None:
+        _pwd.verify(raw, _DUMMY_HASH)
+        return False
     return _pwd.verify(raw, hashed)
 
 

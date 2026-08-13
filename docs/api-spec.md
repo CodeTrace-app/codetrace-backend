@@ -355,12 +355,41 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
 ```
 
 - 프론트: "변경 이력 없음" 명시 + `parent_module`로 이동 경로 제공. 빈 화면 금지.
+- **`no_history`여도 `evidence`가 비어 있지 않을 수 있다.** 포맷팅·주석 같은 무의미한 커밋만 있는
+  함수가 여기 해당한다. 근거는 화면에 보여주되 요약은 만들지 않는다. 빈 배열만 가정하지 말 것.
+
+**응답 200 — 근거 상충 (`status: "conflicting"`)**
+```json
+{
+  "function": { "name": "verify_token", "path": "src/auth.py", "start_line": 18, "end_line": 47 },
+  "status": "conflicting",
+  "summary": "타임아웃을 두고 상반된 결정이 있다. PG사 권장값에 맞춰 10초로 올린 변경과, 커넥션 풀이 고갈된다는 이유로 3초로 되돌린 변경이 함께 남아 있다. 어느 쪽이 현재 기준인지는 수집된 이력만으로 확정할 수 없다.",
+  "evidence": [
+    { "kind": "commit", "sha": "a1b2c3d", "title": "fix: 타임아웃 3s→10s 상향", "author": "kimdev", "date": "2025-06-14T02:11:00Z", "url": "https://github.com/acme-payments/acme-payment-service/commit/a1b2c3d" },
+    { "kind": "commit", "sha": "e4f5g6h", "title": "fix: 타임아웃 10s→3s 원복", "author": "leedev", "date": "2025-08-02T05:00:00Z", "url": "https://github.com/acme-payments/acme-payment-service/commit/e4f5g6h" }
+  ],
+  "evidence_truncated": false,
+  "parent_module": null
+}
+```
 
 **`status` 값**
 - `"ok"` 정상
 - `"no_history"` 근거 부족 — 추측 서술 금지, summary는 null
 - `"conflicting"` 근거 상충 — summary가 양쪽을 나란히 서술하고 evidence에 양쪽 모두 포함
-- 근거 과다 시 서버가 최근·주요 근거 위주로 잘라서 보내고 `evidence_truncated: true`
+- 근거 과다 시 서버가 최근 근거 **12건**까지만 보내고 `evidence_truncated: true`.
+  `conflicting`이면 상충하는 양쪽 근거는 자르기에서 제외해 항상 포함한다.
+
+**`conflicting` 판정 기준** (오탐을 막기 위해 좁게 잡는다. 기본값은 `ok`)
+- 상충으로 본다: 두 근거가 **같은 결정에 대해 서로를 부정하는 이유**를 대고 있고, 그 뒤에 어느 쪽으로
+  정리됐는지 알려주는 근거가 없을 때.
+- 상충이 아니다: 값이 A→B로 바뀐 단순한 시간순 변경 / 도입과 제거가 같은 이슈·PR을 공유하는 계획된 전환 /
+  리뷰에서 제기됐다가 답변으로 해소된 우려 / 포맷팅·주석·의존성 변경 / 서로 다른 층위를 보완하는 변경.
+
+**요약 생성 실패 시**
+- LLM 호출이 실패하면 `summary`는 `null`로 내리고 `status`는 근거 유무에 따른 값을 그대로 유지한다.
+  근거가 있는 함수를 `no_history`로 바꾸지 않는다. 실패한 요약은 저장하지 않으므로 다음 조회에서 다시 시도된다.
+- 요약은 인덱싱 중에 미리 생성해 저장한다. 이 API는 저장된 요약을 읽기만 하므로 LLM 지연에 묶이지 않는다.
 
 ### `GET /repos/{repo_id}/graph?path=src/payment.py&function=process_payment`
 
