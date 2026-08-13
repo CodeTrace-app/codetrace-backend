@@ -11,6 +11,9 @@ from src.github.app_auth import GITHUB_API, GitHubAppError, get_installation_tok
 
 _PER_PAGE = 100
 _TIMEOUT = 10.0
+# 페이지를 끝없이 도는 걸 막는 안전장치. 종료 조건이 "마지막 페이지가 덜 찼다" 하나뿐이라,
+# 응답이 page 파라미터를 무시하면(프록시·API 변경) 백그라운드 스레드가 영원히 돈다.
+_MAX_PAGES = 50
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -42,14 +45,13 @@ def _get_paginated(path: str, token: str, what: str, key: str | None = None, **p
     key가 있으면 응답 객체 안의 그 배열을, 없으면 응답 자체를 배열로 본다.
     """
     items: list[dict] = []
-    page = 1
-    while True:
+    for page in range(1, _MAX_PAGES + 1):
         body = _get(path, token, what, per_page=_PER_PAGE, page=page, **params)
         page_items = body[key] if key else body
         items.extend(page_items)
         if len(page_items) < _PER_PAGE:
             return items
-        page += 1
+    raise GitHubAppError(f"{what} 조회가 {_MAX_PAGES}페이지를 넘겼습니다")
 
 
 def list_installation_repos(installation_id: int) -> list[dict]:

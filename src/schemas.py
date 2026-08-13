@@ -101,10 +101,17 @@ class PlanOut(BaseModel):
 
 
 class RepoCreateRequest(BaseModel):
-    # "소유자/레포" 형식만 받는다. 이 값이 클론 경로와 GitHub API 경로에 그대로 들어가서,
-    # ".."이나 슬래시가 섞이면 의도하지 않은 디렉터리·엔드포인트를 가리킬 수 있다.
-    # 각 조각 100자 제한은 Repo.name(String(100))에 맞춘 것이다.
-    github_full_name: str = Field(pattern=r"^[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$")
+    """레포 등록 요청.
+
+    "소유자/레포" 형식만 받는다. 이 값이 클론 경로와 GitHub API 경로에 그대로 들어가서,
+    ".."이 섞이면 의도하지 않은 엔드포인트를 가리킨다 (httpx가 dot segment를 정규화한다).
+    각 조각은 영숫자로 시작하게 해서 ".."과 "."을 원천 차단한다.
+    100자 제한은 Repo.name(String(100))에 맞춘 것이다.
+    """
+
+    github_full_name: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    )
 
 
 class RepoProgressOut(BaseModel):
@@ -138,8 +145,11 @@ class RepoOut(BaseModel):
 
     @classmethod
     def of(cls, repo: Repo) -> "RepoOut":
+        # 진행 중일 때만 progress를 준다 (api-spec §3). done·failed인데 값이 남아 있으면
+        # 실패한 카드에 100% 진행바가 뜬다. DB에 남은 값이 어떻든 여기서 계약을 지킨다.
+        in_progress = repo.indexing_status in ("collecting", "parsing")
         progress = None
-        if repo.progress_total is not None:
+        if in_progress and repo.progress_total is not None:
             progress = RepoProgressOut(current=repo.progress_current or 0, total=repo.progress_total)
         return cls(
             id=repo.id,
@@ -171,3 +181,52 @@ class RepoListOut(BaseModel):
 class ReindexOut(BaseModel):
     id: int
     indexing_status: str
+
+
+# ---------------------------------------------------------------- 맥락 (api-spec §4)
+
+
+class FunctionOut(BaseModel):
+    name: str
+    path: str
+    start_line: int
+    end_line: int
+
+
+class CommitEvidenceOut(BaseModel):
+    """커밋 근거. PR 근거와 필드 구성이 다르므로 모델을 나눈다.
+
+    하나로 합쳐 null을 섞어 내보내면 프론트 목데이터와 어긋난다 (api-spec §4).
+    """
+
+    kind: Literal["commit"] = "commit"
+    sha: str
+    title: str
+    author: str
+    date: datetime
+    url: str
+
+
+class PrEvidenceOut(BaseModel):
+    kind: Literal["pr"] = "pr"
+    number: int
+    title: str
+    date: datetime | None
+    url: str
+    review_excerpt: str | None
+
+
+class ParentModuleOut(BaseModel):
+    path: str
+    name: str
+
+
+class ContextOut(BaseModel):
+    """맥락 패널 응답. 필드 6개 고정 — 추가하면 계약 위반이다."""
+
+    function: FunctionOut
+    status: Literal["ok", "no_history", "conflicting"]
+    summary: str | None
+    evidence: list[CommitEvidenceOut | PrEvidenceOut]
+    evidence_truncated: bool
+    parent_module: ParentModuleOut | None

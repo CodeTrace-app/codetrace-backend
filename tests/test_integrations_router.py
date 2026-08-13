@@ -118,6 +118,79 @@ def test_콜백은_installation_id를_저장하고_프론트로_리다이렉트�
     assert org.github_account == "acme-payments"
 
 
+def test_다른_조직의_설치를_가로챌_수_없다(client, db_session, monkeypatch):
+    """installation_id는 브라우저 주소창에서 오는 값이라 위조할 수 있다.
+
+    공격자가 자기 조직용 state를 정상 발급받은 뒤 남의 installation_id를 붙이면
+    그 조직의 private 레포를 읽게 된다. state 검증만으로는 못 막는다.
+    """
+    victim = Organization(
+        name="피해자회사", slug="victim", github_installation_id=77777, github_account="victim-corp"
+    )
+    db_session.add(victim)
+    attacker, _admin = _make_org_and_admin(db_session)
+    db_session.commit()
+
+    monkeypatch.setattr(integrations_router, "get_installation_account", lambda i: "victim-corp")
+
+    res = client.get(
+        "/api/v1/integrations/github/callback",
+        params={"installation_id": 77777, "setup_action": "install", "state": _install_state(attacker.id)},
+        follow_redirects=False,
+    )
+
+    assert res.status_code == 409
+    db_session.refresh(attacker)
+    assert attacker.github_installation_id is None
+    assert attacker.github_account is None
+
+
+def test_같은_조직이_재설치하는_것은_막지_않는다(client, db_session, monkeypatch):
+    org, _admin = _make_org_and_admin(db_session, installation_id=555, account="acme")
+    monkeypatch.setattr(integrations_router, "get_installation_account", lambda i: "acme")
+
+    res = client.get(
+        "/api/v1/integrations/github/callback",
+        params={"installation_id": 555, "setup_action": "update", "state": _install_state(org.id)},
+        follow_redirects=False,
+    )
+
+    assert res.status_code in (302, 307)
+
+
+def test_installation_id_없는_콜백도_리다이렉트된다(client, db_session):
+    """조직 승인 대기(setup_action=request)면 GitHub이 installation_id를 안 보낸다.
+
+    필수 파라미터로 두면 사용자가 프론트 대신 생 JSON 422를 본다.
+    """
+    org, _admin = _make_org_and_admin(db_session)
+
+    res = client.get(
+        "/api/v1/integrations/github/callback",
+        params={"setup_action": "request", "state": _install_state(org.id)},
+        follow_redirects=False,
+    )
+
+    assert res.status_code in (302, 307)
+    db_session.refresh(org)
+    assert org.github_installation_id is None
+
+
+def test_만료_시각이_없는_state는_거부한다(client, db_session):
+    """exp를 빼면 만료 검사가 통째로 건너뛰어진다."""
+    org, _admin = _make_org_and_admin(db_session)
+    forged = jwt.encode(
+        {"org": org.id, "purpose": "github_install"}, settings.secret_key, algorithm="HS256"
+    )
+
+    res = client.get(
+        "/api/v1/integrations/github/callback",
+        params={"installation_id": 1, "setup_action": "install", "state": forged},
+    )
+
+    assert res.status_code == 400
+
+
 def test_승인_대기_setup_action은_저장하지_않는다(client, db_session):
     org, _admin = _make_org_and_admin(db_session)
 
