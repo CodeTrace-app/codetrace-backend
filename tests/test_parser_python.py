@@ -356,6 +356,23 @@ def test_튜플_대입도_각각_상수로_잡는다():
     assert {s.name for s in symbols} == {"WIDTH", "HEIGHT"}
 
 
+def test_상수로_잡는_대입_형태():
+    """지원 범위를 못박아 둔다. 오른쪽이 무엇이든 정의는 정의다."""
+    assert {s.name for s in parse_constants("TIMEOUT: int = 30\n")[0]} == {"TIMEOUT"}
+    assert {s.name for s in parse_constants("TIMEOUT = DEFAULT = 30\n")[0]} == {"TIMEOUT", "DEFAULT"}
+    assert {s.name for s in parse_constants("TIMEOUT = get_value()\n")[0]} == {"TIMEOUT"}
+
+
+def test_값이_없는_선언은_상수가_아니다():
+    """TIMEOUT: int는 타입 선언이지 상수가 아니다."""
+    assert parse_constants("TIMEOUT: int\n")[0] == []
+
+
+def test_조건문_안의_대입은_상수가_아니다():
+    """최상위가 아니다. 조건에 따라 달라지는 값이다."""
+    assert parse_constants("if True:\n    TIMEOUT = 1\n")[0] == []
+
+
 def test_상수_정의_자체는_참조가_아니다():
     """모듈 레벨이라 출발점이 없다. 자기 자신을 참조하는 간선을 만들지 않는다."""
     _, refs = parse_constants("TIMEOUT = 10\n")

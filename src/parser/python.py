@@ -252,37 +252,53 @@ class PythonAdapter(LanguageAdapter):
     def _constants(self, path: str, source: bytes, root: Node) -> list[ParsedSymbol]:
         """모듈 최상위의 대문자 이름을 상수로 잡는다.
 
-        최상위만 본다. 함수 안이나 클래스 안의 대문자 이름은 전역 상수가 아니다.
+        잡는 형태:
+            TIMEOUT = 30            값이 있는 대입
+            TIMEOUT: int = 30       타입을 붙인 대입
+            TIMEOUT = DEFAULT = 30  사슬 대입 (양쪽 다)
+            WIDTH, HEIGHT = 10, 20  튜플 대입 (양쪽 다)
+            TIMEOUT = get_value()   오른쪽이 무엇이든 상관없다
+
+        잡지 않는 형태:
+            TIMEOUT: int            값이 없는 선언. 상수가 아니라 타입 선언이다
+            if x: TIMEOUT = 1       최상위가 아니다. 조건에 따라 달라지는 값이다
+            class C: DEFAULT = 1    클래스 속성이지 전역 상수가 아니다
+            def f(): MAX = 1        지역 변수다
         """
         constants: list[ParsedSymbol] = []
         for statement in root.named_children:
             if statement.type != "expression_statement":
                 continue
-            for assignment in statement.named_children:
-                if assignment.type != "assignment":
-                    continue
-                left = assignment.child_by_field_name("left")
-                if left is None:
-                    continue
+            for child in statement.named_children:
+                assignment: Node | None = child
+                while assignment is not None and assignment.type == "assignment":
+                    right = assignment.child_by_field_name("right")
+                    left = assignment.child_by_field_name("left")
+                    if right is None or left is None:
+                        # 값이 없는 선언(TIMEOUT: int)은 상수 정의가 아니다.
+                        break
 
-                # A = 1 과 A, B = 1, 2 를 모두 받는다.
-                targets = [left] if left.type == "identifier" else list(left.named_children)
-                for target in targets:
-                    if target.type != "identifier":
-                        continue
-                    name = _text(source, target)
-                    if not _is_constant_name(name):
-                        continue
-                    constants.append(
-                        ParsedSymbol(
-                            ident=f"{path}::{name}",
-                            name=name,
-                            path=path,
-                            kind="constant",
-                            start_line=assignment.start_point[0] + 1,
-                            end_line=assignment.end_point[0] + 1,
+                    # A = 1 과 A, B = 1, 2 를 모두 받는다.
+                    targets = [left] if left.type == "identifier" else list(left.named_children)
+                    for target in targets:
+                        if target.type != "identifier":
+                            continue
+                        name = _text(source, target)
+                        if not _is_constant_name(name):
+                            continue
+                        constants.append(
+                            ParsedSymbol(
+                                ident=f"{path}::{name}",
+                                name=name,
+                                path=path,
+                                kind="constant",
+                                start_line=assignment.start_point[0] + 1,
+                                end_line=assignment.end_point[0] + 1,
+                            )
                         )
-                    )
+
+                    # 사슬 대입(A = B = 1)은 오른쪽에 또 대입이 온다.
+                    assignment = right if right.type == "assignment" else None
         return constants
 
     def _constant_refs(
