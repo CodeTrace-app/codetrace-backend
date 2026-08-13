@@ -6,10 +6,12 @@
 """
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.auth import Ctx, current_user, get_db, writable_user
-from src.db.models import PullRequest, Repo
+from src.db.models import Organization, PullRequest, Repo
 from src.db.query import org_query, query
 from src.indexing.runner import IN_PROGRESS, run_indexing
 from src.schemas import DashboardSummaryOut, ReindexOut, RepoCreateRequest, RepoListOut, RepoOut
@@ -56,6 +58,10 @@ def add_repo(
     if org.github_installation_id is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "GitHub App이 설치되어 있지 않습니다")
 
+    # 조직 행을 잠가 한도 검사와 저장 사이에 다른 요청이 끼어들지 못하게 한다.
+    # 잠그지 않으면 동시 요청이 모두 한도 검사를 통과해 플랜 한도를 넘겨 저장된다.
+    db.scalar(select(Organization).where(Organization.id == ctx.organization_id).with_for_update())
+
     already_count = len(db.scalars(query(Repo, ctx.organization_id)).all())
     if already_count >= org.repo_limit:
         raise HTTPException(
@@ -74,7 +80,14 @@ def add_repo(
         indexing_status="collecting",
     )
     db.add(repo)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # (organization_id, github_full_name) unique 제약이 최종 판정이다.
+        # 위 조회를 통과한 동시 요청이 여기서 걸리면 500 대신 409로 돌려준다.
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "이미 추가된 레포입니다") from None
+
     db.refresh(repo)
 
     # 선택 즉시 인덱싱을 시작한다 (S-FWXUHO).

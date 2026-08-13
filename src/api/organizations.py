@@ -35,7 +35,10 @@ def create_organization(
     db: Session = Depends(get_db),
 ) -> OrganizationCreatedOut:
     """가입 직후 조직을 만든다. 사용자당 하나만 가질 수 있다."""
-    user = db.get(User, ctx.user_id)
+    # 사용자 행을 잠근 뒤 확인한다. 잠그지 않으면 더블클릭 같은 동시 요청에서
+    # 두 요청이 모두 "조직 없음"을 통과해 조직이 두 개 만들어지고,
+    # 먼저 발급된 토큰의 조직 정보가 DB와 어긋난다.
+    user = db.scalar(select(User).where(User.id == ctx.user_id).with_for_update())
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "사용자를 찾을 수 없습니다")
     if user.organization_id is not None:
