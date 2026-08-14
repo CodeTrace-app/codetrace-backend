@@ -277,11 +277,17 @@ class TreeOut(BaseModel):
 
 
 class FileFunctionOut(BaseModel):
-    """뷰어에서 클릭할 수 있는 함수 범위."""
+    """뷰어에서 클릭할 수 있는 심볼 범위.
+
+    kind는 뒤에 붙은 항목이다 (이슈 #25). 클래스만 있고 함수가 없는 파일에서
+    목록이 비어 막다른 골목이 되지 않도록 클래스도 함께 담는다. 기존 항목의
+    모양은 그대로라 프론트가 무시해도 동작한다.
+    """
 
     name: str
     start_line: int
     end_line: int
+    kind: Literal["function", "class"] = "function"
 
 
 class FileOut(BaseModel):

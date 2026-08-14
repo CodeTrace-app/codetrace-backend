@@ -196,6 +196,116 @@ def test_남의_객체_속성은_참조하지_않는다():
     assert [r for r in result.references if r.ref_type == "constant"] == []
 
 
+# ── 클래스와 상속 (이슈 #25) ───────────────────────────────────────────────
+
+CLASSES = """import { Base } from './base'
+
+export class RefundClient extends Base {
+  constructor(private url: string) {
+    super()
+  }
+
+  async fetch(id: number) {
+    return null
+  }
+}
+
+class Plain {}
+
+export default class Wrapper extends ns.Base {}
+"""
+
+
+def test_클래스를_심볼로_잡는다():
+    result = parse(CLASSES)
+    assert names(result, "class") == {"RefundClient", "Plain", "Wrapper"}
+
+
+def test_export와_default가_붙어도_잡는다():
+    assert names(parse("export class A {}"), "class") == {"A"}
+    assert names(parse("export default class B {}"), "class") == {"B"}
+    assert names(parse("class C {}"), "class") == {"C"}
+
+
+def test_abstract_클래스도_잡는다():
+    assert names(parse("abstract class D {}"), "class") == {"D"}
+
+
+def test_클래스와_그_메서드가_둘_다_남는다():
+    """클래스를 담느라 기존 메서드 추출을 덮어쓰면 안 된다."""
+    by_ident = {s.ident: s.kind for s in parse(CLASSES).symbols}
+    assert by_ident["admin-web/src/api/refund.ts::RefundClient"] == "class"
+    assert by_ident["admin-web/src/api/refund.ts::RefundClient.fetch"] == "function"
+
+
+def test_abstract_클래스의_메서드도_클래스_이름을_붙인다():
+    """빠지면 같은 이름의 메서드끼리 ident가 겹쳐 인덱싱이 실패한다."""
+    source = "abstract class A {\n  run() {}\n}\nclass B {\n  run() {}\n}\n"
+    idents = [s.ident for s in parse(source).symbols if s.kind == "function"]
+    assert set(idents) == {
+        "admin-web/src/api/refund.ts::A.run",
+        "admin-web/src/api/refund.ts::B.run",
+    }
+    assert len(idents) == len(set(idents))
+
+
+def test_이름이_없는_default_export는_잡지_않는다():
+    """그래프 노드가 될 이름이 없다."""
+    assert names(parse("export default class {}"), "class") == set()
+
+
+def test_인터페이스는_클래스가_아니다():
+    """api-spec §4의 노드 종류에 interface는 없다."""
+    assert names(parse("export interface Refund {\n  id: number\n}\n"), "class") == set()
+
+
+def test_클래스에는_파라미터가_없다():
+    assert all(s.params == [] for s in parse(CLASSES).symbols if s.kind == "class")
+
+
+def test_extends를_참조로_남긴다():
+    refs = [r for r in parse(CLASSES).references if r.ref_type == "inheritance"]
+    assert ("admin-web/src/api/refund.ts::RefundClient", "Base", None) in [
+        (r.source_ident, r.target_name, r.receiver) for r in refs
+    ]
+
+
+def test_점_표기_부모는_이름과_수신자를_나눠_담는다():
+    refs = [r for r in parse(CLASSES).references if r.ref_type == "inheritance"]
+    wrapper = next(r for r in refs if r.source_ident.endswith("::Wrapper"))
+    assert (wrapper.target_name, wrapper.receiver) == ("Base", "ns")
+
+
+def test_implements는_상속이_아니다():
+    """인터페이스는 심볼로 잡지 않아 이을 곳이 없다."""
+    source = "interface F {}\nclass C extends D implements F {}\n"
+    refs = [r for r in parse(source).references if r.ref_type == "inheritance"]
+    assert {r.target_name for r in refs} == {"D"}
+
+
+def test_이름을_확정할_수_없는_부모는_버린다():
+    """mixin(Base)로 만든 부모는 이름을 확정할 수 없다. 추측으로 연결하지 않는다."""
+    refs = [r for r in parse("class C extends mixin(Base) {}").references]
+    assert [r for r in refs if r.ref_type == "inheritance"] == []
+
+
+def test_상속이_없는_클래스는_간선을_만들지_않는다():
+    refs = parse("class Plain {}").references
+    assert [r for r in refs if r.ref_type == "inheritance"] == []
+
+
+def test_tsx에서도_클래스를_잡는다():
+    """JSX는 별도 파서를 쓴다. 한쪽만 되면 안 된다."""
+    result = parse("export class Widget extends Base {}", "admin-web/src/pages/Widget.tsx")
+    assert names(result, "class") == {"Widget"}
+    assert [r.target_name for r in result.references if r.ref_type == "inheritance"] == ["Base"]
+
+
+def test_js_파일에서도_클래스를_잡는다():
+    result = parse("class Legacy extends Base {}", "scripts/legacy.js")
+    assert names(result, "class") == {"Legacy"}
+
+
 # ── 어댑터 선택 ────────────────────────────────────────────────────────────
 
 

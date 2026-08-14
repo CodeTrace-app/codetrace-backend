@@ -170,7 +170,8 @@ class B:
         pass
 """
     symbols, _ = parse(source, "src/x.py")
-    assert {s.ident for s in symbols} == {"src/x.py::A.run", "src/x.py::B.run"}
+    functions = {s.ident for s in symbols if s.kind == "function"}
+    assert functions == {"src/x.py::A.run", "src/x.py::B.run"}
 
 
 # ── 데코레이터 ─────────────────────────────────────────────────────────────
@@ -377,6 +378,127 @@ def test_상수_정의_자체는_참조가_아니다():
     """모듈 레벨이라 출발점이 없다. 자기 자신을 참조하는 간선을 만들지 않는다."""
     _, refs = parse_constants("TIMEOUT = 10\n")
     assert refs == []
+
+
+# ── 클래스와 상속 (이슈 #25) ───────────────────────────────────────────────
+
+CLASSES = '''from dataclasses import dataclass
+
+from src.db.base import Base
+
+
+@dataclass
+class Refund:
+    id: int
+    order_id: int
+
+
+class Order(Base):
+    def validate(self):
+        return True
+
+    def total(self):
+        return 0
+
+
+class Wrapper:
+    class Inner:
+        pass
+'''
+
+
+def parse_classes(source: str = CLASSES, path: str = "src/models/refund.py"):
+    result = PythonAdapter().parse(path, source)
+    return result.symbols, result.references
+
+
+def test_클래스를_심볼로_잡는다():
+    """함수가 없는 모델 파일도 심볼을 갖는다. 탐색기에서 빈 화면이 되지 않는다."""
+    symbols, _ = parse_classes()
+    assert {s.name for s in symbols if s.kind == "class"} == {
+        "Refund",
+        "Order",
+        "Wrapper",
+        "Wrapper.Inner",
+    }
+
+
+def test_함수가_하나도_없는_파일도_심볼이_남는다():
+    """데모 레포의 src/models/*.py가 정확히 이 모양이다 (이슈 #25)."""
+    symbols, _ = parse_classes("@dataclass\nclass Refund:\n    id: int\n")
+    assert [(s.ident, s.kind) for s in symbols] == [("src/models/refund.py::Refund", "class")]
+
+
+def test_클래스와_그_메서드가_둘_다_남는다():
+    """클래스를 담느라 기존 메서드 추출을 덮어쓰면 안 된다."""
+    symbols, _ = parse_classes()
+    by_ident = {s.ident: s.kind for s in symbols}
+    assert by_ident["src/models/refund.py::Order"] == "class"
+    assert by_ident["src/models/refund.py::Order.validate"] == "function"
+    assert by_ident["src/models/refund.py::Order.total"] == "function"
+
+
+def test_중첩_클래스는_바깥_이름을_붙인다():
+    """이름이 겹쳐 ident가 충돌하면 인덱싱 전체가 실패한다."""
+    symbols, _ = parse_classes()
+    idents = [s.ident for s in symbols]
+    assert "src/models/refund.py::Wrapper.Inner" in idents
+    assert len(idents) == len(set(idents))
+
+
+def test_데코레이터가_붙은_클래스는_데코레이터부터_센다():
+    """@dataclass만 붙였다 뗀 커밋이 그 클래스의 근거에서 빠지면 안 된다."""
+    symbols, _ = parse_classes()
+    refund = next(s for s in symbols if s.name == "Refund")
+    assert refund.start_line == 6  # @dataclass 줄
+    assert refund.end_line == 9
+
+
+def test_클래스에는_파라미터가_없다():
+    symbols, _ = parse_classes()
+    assert all(s.params == [] for s in symbols if s.kind == "class")
+
+
+def test_상속을_참조로_남긴다():
+    _, refs = parse_classes()
+    inheritance = [r for r in refs if r.ref_type == "inheritance"]
+    assert [(r.source_ident, r.target_name) for r in inheritance] == [
+        ("src/models/refund.py::Order", "Base")
+    ]
+
+
+def test_다중_상속은_부모마다_간선을_만든다():
+    _, refs = parse_classes("class Child(Base, ABC):\n    pass\n")
+    assert {r.target_name for r in refs if r.ref_type == "inheritance"} == {"Base", "ABC"}
+
+
+def test_점_표기_부모는_이름과_수신자를_나눠_담는다():
+    """models.Model의 Model이 어느 파일 것인지는 수신자로 좁힌다."""
+    _, refs = parse_classes("class Child(models.Model):\n    pass\n")
+    ref = next(r for r in refs if r.ref_type == "inheritance")
+    assert (ref.target_name, ref.receiver) == ("Model", "models")
+
+
+def test_메타클래스_인자는_상속이_아니다():
+    _, refs = parse_classes("class Child(Base, metaclass=Meta):\n    pass\n")
+    assert {r.target_name for r in refs if r.ref_type == "inheritance"} == {"Base"}
+
+
+def test_이름을_확정할_수_없는_부모는_버린다():
+    """class C(Generic[T])의 부모는 첨자다. 추측으로 연결하지 않는다."""
+    _, refs = parse_classes("class Child(Generic[T]):\n    pass\n")
+    assert [r for r in refs if r.ref_type == "inheritance"] == []
+
+
+def test_상속이_없는_클래스는_간선을_만들지_않는다():
+    _, refs = parse_classes("class Refund:\n    pass\n")
+    assert [r for r in refs if r.ref_type == "inheritance"] == []
+
+
+def test_클래스_본문의_호출은_출발점이_되지_않는다():
+    """클래스는 심볼이지 참조의 출발점이 아니다. 기존 규칙을 넓히지 않는다."""
+    _, refs = parse_classes("class C:\n    value = compute()\n")
+    assert [r for r in refs if r.ref_type == "call"] == []
 
 
 # ── 어댑터 선택 ────────────────────────────────────────────────────────────

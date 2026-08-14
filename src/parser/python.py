@@ -1,7 +1,7 @@
-"""Python 어댑터 (이슈 #14, #20, #22).
+"""Python 어댑터 (이슈 #14, #20, #22, #25).
 
-이번 범위는 함수·메서드 정의, 함수 호출, import 의존성, 전역 상수까지다.
-클래스 상속은 다음 이슈에서 같은 구조로 붙인다.
+함수·메서드 정의, 함수 호출, import 의존성, 전역 상수, 클래스 정의와 상속을 뽑는다.
+추적하는 연결 네 가지가 모두 여기서 나온다.
 """
 
 import tree_sitter_python
@@ -23,6 +23,13 @@ _FUNCTIONS = """
 (function_definition
   name: (identifier) @name
   parameters: (parameters) @params) @func
+"""
+
+# 클래스 정의 (이슈 #25). 부모 목록(superclasses)은 없을 수도 있어 조건에 넣지 않는다 —
+# 넣으면 `class Refund:`처럼 상속이 없는 클래스가 아예 안 잡힌다. 데모 레포의 모델이
+# 그 형태이므로 여기서 걸러지면 심볼이 하나도 없는 파일이 그대로 남는다.
+_CLASSES = """
+(class_definition name: (identifier) @name) @class
 """
 
 # 호출. f() 형태와 obj.method() 형태를 모두 잡는다.
@@ -87,17 +94,18 @@ def _qualifier(source: bytes, node: Node) -> str | None:
     return ".".join(reversed(names)) or None
 
 
-def _definition_start(func: Node) -> int:
-    """함수의 시작 줄. 데코레이터가 있으면 데코레이터 첫 줄부터다.
+def _definition_start(node: Node) -> int:
+    """정의의 시작 줄. 데코레이터가 있으면 데코레이터 첫 줄부터다.
 
-    tree-sitter는 데코레이터를 def 바깥의 decorated_definition에 두므로 def 줄만
+    tree-sitter는 데코레이터를 def·class 바깥의 decorated_definition에 두므로 def 줄만
     보면 범위에서 빠진다. 근거 연결(git log -L)이 이 범위로 이력을 뒤지기 때문에,
     빼면 라우트 경로나 인증 데코레이터만 바꾼 커밋이 근거에서 통째로 누락된다.
+    클래스도 같다 — @dataclass만 붙였다 뗀 커밋이 그 클래스의 근거에서 빠진다.
     """
-    parent = func.parent
+    parent = node.parent
     if parent is not None and parent.type == "decorated_definition":
         return parent.start_point[0] + 1
-    return func.start_point[0] + 1
+    return node.start_point[0] + 1
 
 
 def _in_decorator(node: Node) -> bool:
@@ -209,6 +217,29 @@ def _receiver(source: bytes, callee: Node) -> str | None:
     return _text(source, obj)
 
 
+def _superclass(source: bytes, node: Node) -> tuple[str, str | None] | None:
+    """부모 클래스 항목에서 (이름, 수신자)를 꺼낸다. 상속으로 볼 수 없으면 None.
+
+        class Child(Base)          -> ("Base", None)
+        class Child(models.Model)  -> ("Model", "models")   수신자로 어느 파일인지 좁힌다
+        class Child(Base, ABC)     -> 항목마다 따로 부른다. 다중 상속은 간선 여러 개다
+        class Meta(metaclass=M)    -> None. 키워드 인자는 부모가 아니다
+        class C(Generic[T])        -> None. 첨자·호출로 만든 부모는 이름을 확정할 수 없다
+
+    확정할 수 없는 형태는 버린다. 없는 관계를 그리지 않는 것이 이 제품의 주장이다.
+    """
+    if node.type == "identifier":
+        return _text(source, node), None
+    if node.type == "attribute":
+        attribute = node.child_by_field_name("attribute")
+        obj = node.child_by_field_name("object")
+        if attribute is None:
+            return None
+        receiver = _text(source, obj) if obj is not None and obj.type == "identifier" else None
+        return _text(source, attribute), receiver
+    return None
+
+
 def _absolute_module(path: str, dots: int, tail: str | None) -> str | None:
     """상대 import를 절대 모듈 경로로 바꾼다.
 
@@ -237,17 +268,79 @@ class PythonAdapter(LanguageAdapter):
 
         # 함수만 넘긴다. 참조의 출발점은 함수여야 한다 — 모듈 레벨에서 일어난 것은
         # 그래프에 올릴 출발 노드가 없다 (#14에서 정한 규칙).
+        # 클래스는 심볼로만 담고 호출·상수 참조의 출발점으로는 쓰지 않는다. 클래스를
+        # 넘기면 메서드 밖(클래스 본문)의 호출까지 새 간선이 되어, 이번 이슈 밖의
+        # 그래프가 함께 바뀐다.
         functions = self._functions(path, raw, tree.root_node)
         constants = self._constants(path, raw, tree.root_node)
+        classes, inheritance = self._classes(path, raw, tree.root_node)
 
         return ParseResult(
-            symbols=functions + constants,
+            symbols=functions + classes + constants,
             references=(
                 self._calls(path, raw, tree.root_node, functions)
                 + self._constant_refs(path, raw, tree.root_node, functions)
+                + inheritance
             ),
             imports=self._imports(path, raw, tree.root_node),
         )
+
+    def _classes(
+        self, path: str, source: bytes, root: Node
+    ) -> tuple[list[ParsedSymbol], list[ParsedReference]]:
+        """클래스 정의를 심볼로, 상속을 참조로 담는다 (이슈 #25).
+
+        한 번에 도는 이유는 상속의 출발 ident가 그 클래스의 ident와 같아야 하기
+        때문이다. 따로 돌면 이름 짓는 규칙이 두 군데로 갈라진다.
+
+        메서드는 _functions가 따로 잡는다. 여기서 담는 것은 클래스 자신이므로
+        `class Refund`와 `Refund.validate`가 둘 다 심볼로 남는다.
+        """
+        symbols: list[ParsedSymbol] = []
+        references: list[ParsedReference] = []
+
+        for _, captured in QueryCursor(Query(_LANGUAGE, _CLASSES)).matches(root):
+            node = captured["class"][0]
+            name = _text(source, captured["name"][0])
+
+            owner = _qualifier(source, node)
+            full_name = f"{owner}.{name}" if owner else name
+            ident = f"{path}::{full_name}"
+
+            symbols.append(
+                ParsedSymbol(
+                    ident=ident,
+                    name=full_name,
+                    path=path,
+                    kind="class",
+                    start_line=_definition_start(node),
+                    end_line=node.end_point[0] + 1,
+                    # 클래스에는 비교할 시그니처가 없다. __init__의 파라미터는
+                    # 그 메서드 심볼이 이미 들고 있다.
+                    params=[],
+                )
+            )
+
+            superclasses = node.child_by_field_name("superclasses")
+            if superclasses is None:
+                continue
+            for child in superclasses.named_children:
+                parent = _superclass(source, child)
+                if parent is None:
+                    continue
+                target_name, receiver = parent
+                references.append(
+                    ParsedReference(
+                        source_ident=ident,
+                        target_name=target_name,
+                        ref_type="inheritance",
+                        path=path,
+                        line=child.start_point[0] + 1,
+                        receiver=receiver,
+                    )
+                )
+
+        return symbols, references
 
     def _constants(self, path: str, source: bytes, root: Node) -> list[ParsedSymbol]:
         """모듈 최상위의 대문자 이름을 상수로 잡는다.
