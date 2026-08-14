@@ -22,6 +22,7 @@ from src.auth import hash_password
 from src.config import settings
 from src.db.models import Organization, Repo, User
 from src.db.session import SessionLocal
+from src.github.installation import InstallationTaken, bind_installation
 from src.indexing.runner import run_indexing
 from src.llm.provider import LLMUnavailable, get_provider
 
@@ -96,7 +97,9 @@ def resolve_installation_id(
         )
     ).all()
     if len(found) == 1:
-        logger.info("설치 ID를 %s 조직에서 가져왔습니다", found[0].name)
+        # 값을 알려줄 뿐 가져오지는 못한다. 한 설치는 한 조직만 가지므로
+        # 아래 bind_installation이 이 조직의 연결을 보고 거절한다.
+        logger.info("설치 ID를 %s 조직에서 확인했습니다", found[0].name)
         return found[0].github_installation_id  # type: ignore[return-value]
 
     raise SystemExit(
@@ -116,10 +119,16 @@ def seed_demo(db: Session, full_name: str, installation_id: int | None = None) -
     org = get_or_create_demo_org(db)
     get_or_create_demo_user(db, org)
 
-    org.github_installation_id = resolve_installation_id(
-        db, owner, installation_id, org.github_installation_id
-    )
-    org.github_account = owner
+    resolved = resolve_installation_id(db, owner, installation_id, org.github_installation_id)
+    try:
+        # 콜백과 같은 규칙을 지난다. 예전에는 여기서 값을 직접 대입해 검사를 건너뛰었고,
+        # 그 결과 같은 설치를 가진 조직이 둘 생겨 PR 경고가 데모에 쌓이지 않았다.
+        bind_installation(db, org, resolved, owner)
+    except InstallationTaken as taken:
+        raise SystemExit(
+            f"설치 {resolved}은(는) 이미 '{taken.owner.name}' 조직에 연결되어 있습니다.\n"
+            "한 설치는 한 조직만 가질 수 있습니다. 그 조직의 GitHub 연결을 해제한 뒤 다시 돌리세요."
+        ) from None
 
     repo = db.scalar(
         select(Repo).where(

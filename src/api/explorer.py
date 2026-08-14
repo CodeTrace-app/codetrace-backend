@@ -123,11 +123,14 @@ def get_file(
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "파일을 찾을 수 없습니다")
 
+    # 클래스도 담는다 (이슈 #25). 상수는 뺀다 — 클릭해서 볼 본문이 없다.
+    # 함수가 하나도 없는 모델 파일에서 목록이 비면 사용자가 갈 곳이 없다.
+    # 그래프·맥락 API는 이미 kind를 가리지 않으므로 여기만 열면 이어진다.
     symbols = db.scalars(
         query(Symbol, ctx.organization_id)
         .where(Symbol.repo_id == repo.id)
         .where(Symbol.path == path)
-        .where(Symbol.kind == "function")
+        .where(Symbol.kind.in_(("function", "class")))
     )
 
     return FileOut(
@@ -138,7 +141,9 @@ def get_file(
         truncated=len(file.content.encode("utf-8")) >= MAX_FILE_BYTES,
         functions=sorted(
             (
-                FileFunctionOut(name=s.name, start_line=s.start_line, end_line=s.end_line)
+                FileFunctionOut(
+                    name=s.name, start_line=s.start_line, end_line=s.end_line, kind=s.kind
+                )
                 for s in symbols
             ),
             key=lambda f: f.start_line,

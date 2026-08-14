@@ -19,6 +19,7 @@ from src.db.models import Organization, Repo
 from src.db.query import org_query, query
 from src.github.app_auth import GitHubAppError, get_installation_account
 from src.github.client import list_installation_repos
+from src.github.installation import InstallationTaken, bind_installation
 
 logger = logging.getLogger(__name__)
 
@@ -115,28 +116,23 @@ def github_install_callback(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "조직을 찾을 수 없습니다")
 
     if setup_action in ("install", "update") and installation_id is not None:
+        try:
+            account = get_installation_account(installation_id)
+        except GitHubAppError:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 설치 정보를 확인하지 못했습니다")
+
         # installation_id는 GitHub이 아니라 브라우저 주소창에서 오는 값이라 위조할 수 있다.
         # 이미 다른 조직이 쓰고 있는 설치라면, 그 조직의 레포를 훔쳐보려는 시도다.
         # (state는 자기 조직 것을 정상 발급받아 붙일 수 있으므로 state 검증만으로는 못 막는다.)
-        taken = db.scalar(
-            select(Organization)
-            .where(Organization.github_installation_id == installation_id)
-            .where(Organization.id != org.id)
-        )
-        if taken is not None:
+        try:
+            bind_installation(db, org, installation_id, account)
+        except InstallationTaken:
             logger.warning(
                 "다른 조직에 연결된 installation을 요구했습니다: org=%s installation=%s",
                 org.id,
                 installation_id,
             )
-            raise HTTPException(status.HTTP_409_CONFLICT, "이미 다른 조직에 연결된 설치입니다")
-
-        try:
-            account = get_installation_account(installation_id)
-        except GitHubAppError:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "GitHub 설치 정보를 확인하지 못했습니다")
-        org.github_installation_id = installation_id
-        org.github_account = account
+            raise HTTPException(status.HTTP_409_CONFLICT, "이미 다른 조직에 연결된 설치입니다") from None
         db.commit()
     # setup_action == "request": 조직 승인 대기 상태. installation_id를 아직
     # 확정할 수 없으므로 저장하지 않고 연동 화면으로만 돌려보낸다.
