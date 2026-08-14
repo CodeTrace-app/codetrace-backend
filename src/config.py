@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     # 배포 환경의 디스크는 재시작하면 비워지지만, 없으면 다시 클론하므로 문제되지 않는다.
     clone_root: str = "./local/clones"
 
+    # 데모 세션이 보여줄 레포. 시드 스크립트(python -m src.demo)가 쓴다.
+    demo_repo: str = "acme-payments/acme-payment-service"
+    # 데모 조직에 심을 GitHub App 설치 ID. 0이면 스크립트가 연동된 조직에서 찾는다.
+    # .env.example을 복사하면 빈 문자열로 들어오는데, 그대로 두면 int 파싱이 실패해
+    # 서버가 아예 뜨지 않는다. 값을 안 넣은 것은 오류가 아니라 기본값이다.
+    demo_installation_id: int = 0
+
+    @field_validator("demo_installation_id", mode="before")
+    @classmethod
+    def _blank_is_zero(cls, value: object) -> object:
+        return 0 if value == "" else value
+
     github_app_id: str = ""
     # 설치 URL(https://github.com/apps/<slug>/installations/new)에 쓰는 앱 slug.
     # app_id(JWT iss)와 다른 값이라 별도로 받는다.

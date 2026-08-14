@@ -43,3 +43,13 @@ def test_내용이_있으면_경로보다_우선한다(tmp_path):
 def test_둘_다_없으면_빈_문자열():
     # 로컬 .env에 실제 키 경로가 들어 있으므로 무시하고 기본값만 본다.
     assert Settings(_env_file=None).github_private_key == ""
+
+
+def test_설치_ID를_비워둬도_서버가_뜬다():
+    """.env.example을 복사하면 빈 문자열로 들어온다.
+
+    그대로 int로 파싱하면 서버가 아예 시작되지 않는다.
+    값을 안 넣은 것은 오류가 아니라 기본값이다.
+    """
+    assert Settings(_env_file=None, DEMO_INSTALLATION_ID="").demo_installation_id == 0
+    assert Settings(_env_file=None, DEMO_INSTALLATION_ID="1234").demo_installation_id == 1234
