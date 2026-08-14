@@ -5,6 +5,7 @@
 """
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from src import demo as demo_module
 from src.db.models import Organization, Repo, User
@@ -95,23 +96,6 @@ def test_데모_조직에_심어둔_값을_다시_쓴다(db_session):
     assert resolve_installation_id(db_session, "acme-payments", None, current=777) == 777
 
 
-def test_데모_조직은_후보에서_뺀다(db_session):
-    """자기 자신과 경쟁하면 후보가 둘이 되어 '어느 쪽인지 모르겠다'로 멈춘다."""
-    db_session.add(
-        Organization(
-            name="에이크미", slug="acme", github_account="acme-payments", github_installation_id=4321
-        )
-    )
-    db_session.add(
-        Organization(
-            name="데모", slug=DEMO_SLUG, github_account="acme-payments", github_installation_id=4321
-        )
-    )
-    db_session.commit()
-
-    assert resolve_installation_id(db_session, "acme-payments", None) == 4321
-
-
 def test_찾을_수_없으면_안내하고_멈춘다(db_session):
     """조용히 0을 쓰면 인덱싱이 인증 오류로 죽고 원인을 알기 어렵다."""
     with pytest.raises(SystemExit) as caught:
@@ -120,18 +104,24 @@ def test_찾을_수_없으면_안내하고_멈춘다(db_session):
     assert "installation-id" in str(caught.value)
 
 
-def test_같은_계정_조직이_둘이면_고르지_않는다(db_session):
-    """어느 쪽 설치인지 확정할 수 없다. 추측하지 않고 멈춘다."""
-    for slug in ("a", "b"):
-        db_session.add(
-            Organization(
-                name=slug, slug=slug, github_account="acme-payments", github_installation_id=1
-            )
+def test_다른_조직이_쓰는_설치는_빼앗지_않는다(db_session, fake_indexing):
+    """한 설치는 한 조직만 가진다.
+
+    예전에는 다른 조직의 값을 그대로 복사했고, 그 결과 같은 설치를 가진 조직이 둘 생겨
+    PR 웹훅이 먼저 만들어진 쪽을 집었다. 데모에는 경고가 영영 쌓이지 않았다.
+    """
+    db_session.add(
+        Organization(
+            name="에이크미", slug="acme", github_account="acme-payments", github_installation_id=4321
         )
+    )
     db_session.commit()
 
-    with pytest.raises(SystemExit):
-        resolve_installation_id(db_session, "acme-payments", None)
+    with pytest.raises(SystemExit) as caught:
+        seed_demo(db_session, DEMO_REPO)
+
+    assert "에이크미" in str(caught.value)
+    assert fake_indexing == []
 
 
 # ── 시드 ───────────────────────────────────────────────────────────────────
@@ -172,17 +162,10 @@ def test_두_번_돌려도_레포가_하나다(db_session, fake_indexing):
 def test_설치_ID_없이_다시_돌려도_동작한다(db_session, fake_indexing):
     """파서가 바뀔 때마다 다시 돌리는 명령이다. 두 번째부터 막히면 안 된다.
 
-    첫 실행이 데모 조직에 설치 ID를 심는데, 그 조직이 다음 실행에서 후보로 섞이면
-    '어느 쪽인지 확정할 수 없다'며 멈춘다.
+    첫 실행이 데모 조직에 설치 ID를 심는다. 그 값을 자기 것으로 알아보지 못하면
+    '이미 다른 조직이 쓰고 있다'며 자기 자신을 상대로 멈춘다.
     """
-    db_session.add(
-        Organization(
-            name="에이크미", slug="acme", github_account="acme-payments", github_installation_id=4321
-        )
-    )
-    db_session.commit()
-
-    seed_demo(db_session, DEMO_REPO)  # 설치 ID를 안 넘긴다 — 개인 조직에서 찾는다
+    seed_demo(db_session, DEMO_REPO, installation_id=4321)
     seed_demo(db_session, DEMO_REPO)  # 이번엔 데모 조직에 심어둔 값을 쓴다
 
     org = db_session.query(Organization).filter_by(slug=DEMO_SLUG).one()
@@ -205,6 +188,32 @@ def test_실패한_레포도_다시_돌릴_수_있다(db_session, fake_indexing)
     # fake_indexing이 done으로 바꾸지 않으므로 collecting이 남는 것이 정상이다
     assert repo.indexing_status == "collecting"
     assert repo.progress_current is None
+
+
+# ── 한 설치 = 한 조직 ──────────────────────────────────────────────────────
+
+
+def test_같은_설치를_두_조직이_가질_수_없다(db_session):
+    """앱 코드의 검사를 우회하는 경로가 생겨도 DB가 막는다.
+
+    실제로 데모 시드가 콜백의 검사를 건너뛰고 같은 값을 심은 적이 있다.
+    """
+    db_session.add(Organization(name="가", slug="a", github_installation_id=555))
+    db_session.commit()
+    db_session.add(Organization(name="나", slug="b", github_installation_id=555))
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_연동_전_조직은_여러_개여도_된다(db_session):
+    """설치 ID가 비어 있는 것은 '아직 연동 안 함'이지 중복이 아니다."""
+    for slug in ("a", "b", "c"):
+        db_session.add(Organization(name=slug, slug=slug))
+    db_session.commit()
+
+    assert db_session.query(Organization).count() == 3
 
 
 # ── 요약이 안 만들어질 조건을 미리 알리는가 ────────────────────────────────
