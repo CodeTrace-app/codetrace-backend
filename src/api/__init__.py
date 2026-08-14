@@ -13,6 +13,7 @@ from src.api import (
     inquiries,
     integrations,
     organizations,
+    pr_warnings,
     repos,
 )
 
@@ -23,5 +24,6 @@ api_router.include_router(integrations.router)
 api_router.include_router(repos.router)
 api_router.include_router(context.router)
 api_router.include_router(explorer.router)
+api_router.include_router(pr_warnings.router)
 api_router.include_router(inquiries.router)
 api_router.include_router(admin.router)
