@@ -357,3 +357,22 @@ class PrWarningListOut(BaseModel):
     page: int
     per_page: int
     total: int
+
+
+# ---------------------------------------------------------------- 질의 이력 (api-spec §6)
+
+
+class QueryLogOut(BaseModel):
+    id: int
+    user_name: str
+    action: Literal["context_view", "graph_view"]
+    repo: str
+    target: str
+    created_at: datetime
+
+
+class QueryLogListOut(BaseModel):
+    items: list[QueryLogOut]
+    page: int
+    per_page: int
+    total: int
