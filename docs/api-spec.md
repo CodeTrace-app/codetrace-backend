@@ -299,14 +299,19 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
   "content": "import httpx\n\nTIMEOUT_SECONDS = 10\n\ndef process_payment(order_id, amount, retry=3):\n    ...\n",
   "truncated": false,
   "functions": [
-    { "name": "process_payment", "start_line": 5, "end_line": 42 },
-    { "name": "refund_payment",  "start_line": 45, "end_line": 60 }
+    { "name": "process_payment", "start_line": 5,  "end_line": 42, "kind": "function" },
+    { "name": "refund_payment",  "start_line": 45, "end_line": 60, "kind": "function" },
+    { "name": "Refund",          "start_line": 63, "end_line": 70, "kind": "class"    }
   ]
 }
 ```
 
 - `truncated: true`면 대용량 파일이 잘린 것 — 뷰어 하단에 "일부만 표시됨" 안내
-- `functions`는 파서가 추출한 함수 범위 — 클릭 시 함수 해석에 사용
+- `functions`는 파서가 추출한 심볼 범위 — 클릭 시 맥락·영향 범위 해석에 사용
+- `kind`는 `"function"` \| `"class"` (이슈 #25). 클래스만 있고 함수가 없는 파일에서
+  목록이 비지 않도록 클래스도 담는다. 필드가 늘었을 뿐 기존 항목의 모양은 그대로다 —
+  프론트가 `kind`를 무시해도 동작한다. 목록 라벨은 "함수"보다 "심볼"이 정확하다
+- 상수는 담지 않는다. 클릭해서 볼 본문이 없다
 
 ### `GET /repos/{repo_id}/context?path=src/payment.py&line=12`
 

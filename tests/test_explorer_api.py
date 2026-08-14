@@ -153,6 +153,44 @@ def test_파일_내용과_함수_범위를_돌려준다(client, db_session, setu
     assert [f["name"] for f in body["functions"]] == ["refund", "process"]
 
 
+def test_클래스도_클릭할_수_있게_담는다(client, db_session, setup):
+    """함수가 없는 모델 파일에서 목록이 비면 갈 곳이 없다 (이슈 #25)."""
+    _, user, repo = setup
+    _add_file(db_session, repo, "src/models/refund.py", content="@dataclass\nclass Refund:\n    id: int\n")
+    _add_symbol(db_session, repo, "src/models/refund.py::Refund", kind="class", start=1, end=3)
+
+    body = client.get(
+        f"/api/v1/repos/{repo.id}/file",
+        params={"path": "src/models/refund.py"},
+        headers=_auth(user),
+    ).json()
+
+    assert body["functions"] == [
+        {"name": "Refund", "start_line": 1, "end_line": 3, "kind": "class"}
+    ]
+
+
+def test_상수는_담지_않는다(client, db_session, setup):
+    """클릭해서 볼 본문이 없다."""
+    _, user, repo = setup
+    _add_file(db_session, repo, "src/config.py", content="TIMEOUT = 10\n")
+    _add_symbol(db_session, repo, "src/config.py::TIMEOUT", kind="constant", start=1, end=1)
+
+    body = client.get(
+        f"/api/v1/repos/{repo.id}/file", params={"path": "src/config.py"}, headers=_auth(user)
+    ).json()
+
+    assert body["functions"] == []
+
+
+def test_함수_항목은_kind를_function으로_준다():
+    """기존 항목의 모양이 바뀌면 프론트가 깨진다. 필드만 늘어야 한다."""
+    from src.schemas import FileFunctionOut
+
+    item = FileFunctionOut(name="refund", start_line=1, end_line=2)
+    assert item.kind == "function"
+
+
 def test_없는_파일은_404(client, db_session, setup):
     _, user, repo = setup
 

@@ -1,6 +1,7 @@
-"""TypeScript·JavaScript 어댑터 (이슈 #21).
+"""TypeScript·JavaScript 어댑터 (이슈 #21, #25).
 
-파이썬 어댑터와 같은 것을 뽑는다: 함수 정의, 함수 호출, import 의존성, 전역 상수.
+파이썬 어댑터와 같은 것을 뽑는다: 함수 정의, 함수 호출, import 의존성, 전역 상수,
+클래스 정의와 상속.
 서비스 로직에 언어별 분기를 두지 않기 위해 결과 형태(ParseResult)를 똑같이 맞춘다.
 
 파이썬과 다른 점은 두 가지다.
@@ -52,6 +53,15 @@ _SINGLE_PARAM_ARROW = """
   value: (arrow_function parameter: (identifier) @param)) @func
 """
 
+# 클래스 정의 (이슈 #25). 이름 있는 선언만 잡는다 — `export default class {}`는
+# 그래프 노드가 될 이름이 없다. 파이썬과 달리 이름 노드가 type_identifier다.
+# export·default가 붙어도 노드 타입은 그대로라 따로 잡지 않아도 된다.
+# interface·type은 잡지 않는다. api-spec §4의 노드 종류에 없다.
+_CLASSES = """
+(class_declaration name: (type_identifier) @name) @class
+(abstract_class_declaration name: (type_identifier) @name) @class
+"""
+
 _CALLS = """
 (call_expression function: (identifier) @callee) @call
 (call_expression function: (member_expression property: (property_identifier) @callee)) @call
@@ -64,6 +74,9 @@ _IDENTIFIERS = "(identifier) @name"
 # 정의를 감쌌을 때 이름 앞에 붙는 노드. 파이썬의 "클래스명.메서드명" 규칙과 같다.
 _QUALIFIER_NODES = {
     "class_declaration": "name",
+    # abstract class의 메서드도 클래스 이름을 앞에 달아야 한다. 빠지면 두 클래스에
+    # 같은 이름의 메서드가 있을 때 ident가 겹쳐 인덱싱이 실패한다.
+    "abstract_class_declaration": "name",
     "function_declaration": "name",
     "method_definition": "name",
     "variable_declarator": "name",
@@ -156,6 +169,27 @@ def _is_borrowed_name(node: Node) -> bool:
     return parent.type in ("import_specifier", "import_clause", "namespace_import", "property_identifier")
 
 
+def _superclass(source: bytes, node: Node) -> tuple[str, str | None] | None:
+    """extends 대상에서 (이름, 수신자)를 꺼낸다. 확정할 수 없으면 None.
+
+        class A extends Base      -> ("Base", None)
+        class A extends ns.Base   -> ("Base", "ns")      수신자로 어느 파일인지 좁힌다
+        class A extends mixin(B)  -> None. 호출로 만든 부모는 이름을 확정할 수 없다
+
+    implements는 보지 않는다. 인터페이스는 심볼로 잡지 않아 이을 곳이 없다.
+    """
+    if node.type == "identifier":
+        return _text(source, node), None
+    if node.type == "member_expression":
+        prop = node.child_by_field_name("property")
+        obj = node.child_by_field_name("object")
+        if prop is None:
+            return None
+        receiver = _text(source, obj) if obj is not None and obj.type == "identifier" else None
+        return _text(source, prop), receiver
+    return None
+
+
 def _is_declaration_site(node: Node) -> bool:
     """그 이름이 만들어지는 자리인가."""
     parent = node.parent
@@ -181,15 +215,75 @@ class TypeScriptAdapter(LanguageAdapter):
 
         functions = self._functions(path, raw, tree.root_node, language)
         constants = self._constants(path, raw, tree.root_node)
+        # 파이썬 어댑터와 같다. 클래스는 심볼로만 담고 호출·상수 참조의 출발점으로는
+        # 쓰지 않는다 (메서드 밖에서 일어난 것은 그래프의 출발 노드가 없다).
+        classes, inheritance = self._classes(path, raw, tree.root_node, language)
 
         return ParseResult(
-            symbols=functions + constants,
+            symbols=functions + classes + constants,
             references=(
                 self._calls(path, raw, tree.root_node, functions, language)
                 + self._constant_refs(path, raw, tree.root_node, functions, language)
+                + inheritance
             ),
             imports=self._imports(path, raw, tree.root_node, language),
         )
+
+    def _classes(
+        self, path: str, source: bytes, root: Node, language: Language
+    ) -> tuple[list[ParsedSymbol], list[ParsedReference]]:
+        """클래스 정의를 심볼로, extends를 참조로 담는다 (이슈 #25).
+
+        메서드는 _functions가 따로 잡는다. 클래스 자신과 `A.method`가 둘 다 남는다.
+        """
+        symbols: list[ParsedSymbol] = []
+        references: list[ParsedReference] = []
+
+        for _, captured in QueryCursor(Query(language, _CLASSES)).matches(root):
+            node = captured["class"][0]
+            name = _text(source, captured["name"][0])
+
+            owner = _qualifier(source, node)
+            full_name = f"{owner}.{name}" if owner else name
+            ident = f"{path}::{full_name}"
+
+            symbols.append(
+                ParsedSymbol(
+                    ident=ident,
+                    name=full_name,
+                    path=path,
+                    kind="class",
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    # 클래스에는 비교할 시그니처가 없다. constructor의 파라미터는
+                    # 그 메서드 심볼이 이미 들고 있다.
+                    params=[],
+                )
+            )
+
+            heritage = next((c for c in node.named_children if c.type == "class_heritage"), None)
+            if heritage is None:
+                continue
+            for clause in heritage.named_children:
+                if clause.type != "extends_clause":
+                    continue  # implements_clause는 이을 심볼이 없다
+                for child in clause.named_children:
+                    parent = _superclass(source, child)
+                    if parent is None:
+                        continue
+                    target_name, receiver = parent
+                    references.append(
+                        ParsedReference(
+                            source_ident=ident,
+                            target_name=target_name,
+                            ref_type="inheritance",
+                            path=path,
+                            line=child.start_point[0] + 1,
+                            receiver=receiver,
+                        )
+                    )
+
+        return symbols, references
 
     def _symbol(self, path: str, source: bytes, name_node: Node, func: Node, params: list[str]):
         name = _text(source, name_node)

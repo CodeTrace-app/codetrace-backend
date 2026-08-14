@@ -517,3 +517,76 @@ def test_레포_통계를_채운다(db_session, repo_row, tmp_path):
 
     assert repo_row.files_count == 2
     assert repo_row.functions_count == 2
+
+
+# ── 클래스와 상속 (이슈 #25) ───────────────────────────────────────────────
+
+MODEL_BASE = "class Base:\n    pass\n"
+
+MODEL_REFUND = '''from dataclasses import dataclass
+
+from src.models.base import Base
+
+
+@dataclass
+class Refund(Base):
+    id: int
+    amount: int
+'''
+
+REFUND_SERVICE = '''from src.models.refund import Refund
+
+
+def make_refund(amount):
+    return Refund(id=0, amount=amount)
+'''
+
+
+def test_함수가_없는_모델_파일도_심볼을_갖는다(db_session, repo_row, tmp_path):
+    """데모 레포의 src/models/*.py가 정확히 이 모양이다. 비면 막다른 화면이 된다."""
+    write(tmp_path, {"src/models/refund.py": MODEL_REFUND})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    symbols = db_session.query(Symbol).filter_by(path="src/models/refund.py").all()
+    assert [(s.ident, s.kind) for s in symbols] == [("src/models/refund.py::Refund", "class")]
+
+
+def test_상속을_참조로_저장한다(db_session, repo_row, tmp_path):
+    write(tmp_path, {"src/models/base.py": MODEL_BASE, "src/models/refund.py": MODEL_REFUND})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    ref = one(db_session.query(Reference).filter_by(ref_type="inheritance").all())
+    assert ref.source_ident == "src/models/refund.py::Refund"
+    assert ref.target_ident == "src/models/base.py::Base"
+
+
+def test_상속_대상이_레포_밖이면_저장하지_않는다(db_session, repo_row, tmp_path):
+    """BaseModel은 pydantic 것이다. 없는 관계를 그리지 않는다."""
+    write(tmp_path, {"src/models/refund.py": "from pydantic import BaseModel\n\n\nclass Refund(BaseModel):\n    pass\n"})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    assert db_session.query(Reference).filter_by(ref_type="inheritance").all() == []
+
+
+def test_클래스를_부르는_호출도_이어진다(db_session, repo_row, tmp_path):
+    """Refund(...) 생성자 호출이 클래스 노드로 이어져 모델 파일이 그래프에 붙는다."""
+    write(tmp_path, {"src/models/refund.py": MODEL_REFUND, "src/service.py": REFUND_SERVICE})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    ref = one(calls(db_session))
+    assert ref.source_ident == "src/service.py::make_refund"
+    assert ref.target_ident == "src/models/refund.py::Refund"
+
+
+def test_피참조_횟수에_상속이_들어간다(db_session, repo_row, tmp_path):
+    """그래프가 상한에 걸려 자를 때 쓰는 값이다."""
+    write(tmp_path, {"src/models/base.py": MODEL_BASE, "src/models/refund.py": MODEL_REFUND})
+
+    parse_repo(db_session, repo_row, tmp_path)
+
+    base = db_session.query(Symbol).filter_by(ident="src/models/base.py::Base").one()
+    assert base.reference_count == 1
