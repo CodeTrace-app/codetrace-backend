@@ -1,7 +1,5 @@
 """인증 엔드포인트."""
 
-import secrets
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -16,12 +14,10 @@ from src.auth import (
     verify_password_constant_time,
 )
 from src.db.models import Organization, User
+from src.demo import get_or_create_demo_org, get_or_create_demo_user
 from src.schemas import LoginRequest, MeOut, OrganizationOut, SessionOut, SignupRequest, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-DEMO_SLUG = "demo"
-DEMO_EMAIL = "demo@codetrace.app"
 
 
 def _session(user: User, org: Organization | None, read_only: bool = False) -> SessionOut:
@@ -81,25 +77,13 @@ def demo_session(db: Session = Depends(get_db)) -> SessionOut:
 
     데모 조직의 organization_id를 가진 읽기 전용 세션을 발급한다.
     격리 규칙을 우회하는 경로를 만들지 않고 일반 세션과 같은 길을 지난다.
-    데모 데이터(레포·인덱스)는 별도로 준비한다.
-    """
-    org = db.scalar(select(Organization).where(Organization.slug == DEMO_SLUG))
-    if org is None:
-        org = Organization(name="Acme Corp (데모)", slug=DEMO_SLUG, plan="team", is_demo=True)
-        db.add(org)
-        db.flush()
+    데모 데이터(레포·인덱스)는 `python -m src.demo`가 미리 넣어둔다.
 
-    user = db.scalar(select(User).where(User.email == DEMO_EMAIL))
-    if user is None:
-        user = User(
-            organization_id=org.id,
-            email=DEMO_EMAIL,
-            # 이 계정으로는 로그인할 수 없다. 데모 세션 발급으로만 쓰인다.
-            password_hash=hash_password(secrets.token_urlsafe(32)),
-            name="데모 사용자",
-            role="member",
-        )
-        db.add(user)
+    조직을 찾는 규칙은 시드 스크립트와 공유한다. 따로 두면 서로 다른 조직을
+    만들어, 시드는 성공했는데 화면은 비어 있는 상태가 된다.
+    """
+    org = get_or_create_demo_org(db)
+    user = get_or_create_demo_user(db, org)
     db.commit()
     db.refresh(user)
     db.refresh(org)
