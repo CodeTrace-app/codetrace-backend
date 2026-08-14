@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import api_router
+from src.api.admin import cleanup_old_query_logs
 from src.config import settings
 from src.db.init import create_tables
 from src.indexing.runner import reset_stuck_indexing
@@ -16,6 +17,8 @@ async def lifespan(app: FastAPI):
     create_tables()
     # 재시작으로 끊긴 인덱싱을 정리한다. 두지 않으면 재인덱싱이 영영 막힌다.
     reset_stuck_indexing()
+    # 90일 지난 질의 이력을 지운다 (api-spec §6, 이슈 #30).
+    cleanup_old_query_logs()
     yield
 
 
