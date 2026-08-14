@@ -61,7 +61,14 @@ class Organization(TimestampMixin, Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # GitHub App 설치 정보 (조직당 하나)
-    github_installation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 한 설치는 한 조직만 가진다. GitHub App은 계정당 한 번만 설치되므로, 두 조직이
+    # 같은 값을 가지면 PR 웹훅이 어느 조직 것인지 확정하지 못하고 먼저 만들어진 쪽을
+    # 집는다. 그러면 다른 조직은 경고를 영영 못 받으면서 에러도 보지 못한다.
+    # 앱 코드의 검사만으로는 스크립트 같은 다른 경로가 우회할 수 있어 DB로 막는다.
+    # (NULL은 여러 행이 허용된다 — 아직 연동하지 않은 조직들이다.)
+    github_installation_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, unique=True
+    )
     github_account: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="organization")
