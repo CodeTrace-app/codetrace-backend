@@ -320,3 +320,59 @@ class GraphOut(BaseModel):
     edges: list[GraphEdgeOut]
     total_nodes: int
     truncated: bool
+
+
+# ---------------------------------------------------------------- PR 경고 (api-spec §5)
+
+
+class ImpactedOut(BaseModel):
+    symbol: str
+    path: str
+    line: int
+    type: Literal["call", "import", "constant", "inheritance"]
+
+
+class WarningOut(BaseModel):
+    change_type: Literal["signature_changed", "deleted", "renamed", "constant_changed"]
+    symbol: str
+    detail: str
+    impacted: list[ImpactedOut]
+
+
+class PrWarningOut(BaseModel):
+    """PR 경고 이력 한 건. §5 응답의 items[] 원소."""
+
+    id: int
+    repo: str
+    pr_number: int
+    pr_title: str
+    pr_url: str
+    author: str
+    created_at: datetime
+    warnings: list[WarningOut]
+
+
+class PrWarningListOut(BaseModel):
+    items: list[PrWarningOut]
+    page: int
+    per_page: int
+    total: int
+
+
+# ---------------------------------------------------------------- 질의 이력 (api-spec §6)
+
+
+class QueryLogOut(BaseModel):
+    id: int
+    user_name: str
+    action: Literal["context_view", "graph_view"]
+    repo: str
+    target: str
+    created_at: datetime
+
+
+class QueryLogListOut(BaseModel):
+    items: list[QueryLogOut]
+    page: int
+    per_page: int
+    total: int
