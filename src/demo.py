@@ -23,6 +23,7 @@ from src.config import settings
 from src.db.models import Organization, Repo, User
 from src.db.session import SessionLocal
 from src.indexing.runner import run_indexing
+from src.llm.provider import LLMUnavailable, get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +67,16 @@ def get_or_create_demo_user(db: Session, org: Organization) -> User:
     return user
 
 
-def resolve_installation_id(db: Session, owner: str, explicit: int | None) -> int:
+def resolve_installation_id(
+    db: Session, owner: str, explicit: int | None, current: int | None = None
+) -> int:
     """데모 레포를 읽을 GitHub App 설치 ID를 정한다.
 
-    인자 > 설정값 > 이미 같은 계정에 연동된 조직 순으로 찾는다.
+    인자 > 설정값 > 데모 조직에 이미 심어둔 값 > 같은 계정에 연동된 다른 조직 순.
+
+    `current`(데모 조직에 심어둔 값)를 먼저 보는 이유: 첫 실행이 이 값을 심으므로,
+    두 번째 실행부터는 데모 조직 자신이 후보에 섞여 "어느 쪽인지 모르겠다"로 멈춘다.
+
     마지막 경로는 서버에서 PM이 직접 돌리는 스크립트에서만 쓴다. 요청을 처리하는
     코드가 아니므로 조직 격리 규칙과 무관하다.
     """
@@ -77,11 +84,15 @@ def resolve_installation_id(db: Session, owner: str, explicit: int | None) -> in
         return explicit
     if settings.demo_installation_id:
         return settings.demo_installation_id
+    if current:
+        return current
 
     found = db.scalars(
         select(Organization).where(
             Organization.github_account == owner,
             Organization.github_installation_id.is_not(None),
+            # 데모 조직은 이 함수가 값을 심는 대상이다. 후보로 세면 자기 자신과 경쟁한다.
+            Organization.slug != DEMO_SLUG,
         )
     ).all()
     if len(found) == 1:
@@ -105,7 +116,9 @@ def seed_demo(db: Session, full_name: str, installation_id: int | None = None) -
     org = get_or_create_demo_org(db)
     get_or_create_demo_user(db, org)
 
-    org.github_installation_id = resolve_installation_id(db, owner, installation_id)
+    org.github_installation_id = resolve_installation_id(
+        db, owner, installation_id, org.github_installation_id
+    )
     org.github_account = owner
 
     repo = db.scalar(
@@ -137,6 +150,22 @@ def seed_demo(db: Session, full_name: str, installation_id: int | None = None) -
     return db.get(Repo, repo.id)  # type: ignore[return-value]
 
 
+def summary_blocker() -> str | None:
+    """요약이 만들어지지 않을 이유를 찾는다. 없으면 None.
+
+    요약은 인덱싱 중에 만들어 저장한다. 조회할 때 만들지 않는다.
+    그래서 설정이 잘못되면 몇 분을 다 돌린 뒤에야 요약이 비어 있는 걸 알게 되고,
+    고친 뒤 처음부터 다시 돌려야 한다. 시작 전에 알려준다.
+    """
+    if not settings.llm_api_key:
+        return "LLM_API_KEY가 비어 있습니다"
+    try:
+        get_provider(settings.llm_provider)
+    except LLMUnavailable as reason:
+        return str(reason)
+    return None
+
+
 def main() -> None:
     # 윈도우 콘솔 기본 인코딩(cp949)에 없는 글자가 섞이면 출력에서 죽는다.
     # 인덱싱을 다 끝내놓고 마지막 print에서 실패하면 결과를 못 본다.
@@ -149,6 +178,12 @@ def main() -> None:
     parser.add_argument("--repo", default=settings.demo_repo, help="owner/name")
     parser.add_argument("--installation-id", type=int, default=None)
     args = parser.parse_args()
+
+    blocker = summary_blocker()
+    if blocker is not None:
+        print(f"경고: 배경 요약이 만들어지지 않습니다 — {blocker}")
+        print("      근거(커밋·PR)는 그대로 수집되지만 맥락 탭의 요약 칸이 빕니다.")
+        print("      .env를 고치고 다시 돌리려면 지금 Ctrl+C 하세요.\n")
 
     db = SessionLocal()
     try:
