@@ -5,10 +5,17 @@
 
 from pathlib import PurePosixPath
 
-from src.parser.base import LanguageAdapter, ParsedReference, ParsedSymbol
+from src.parser.base import (
+    LanguageAdapter,
+    ParsedImport,
+    ParsedReference,
+    ParsedSymbol,
+    ParseResult,
+)
 from src.parser.python import PythonAdapter
+from src.parser.typescript import TypeScriptAdapter
 
-_ADAPTERS: tuple[LanguageAdapter, ...] = (PythonAdapter(),)
+_ADAPTERS: tuple[LanguageAdapter, ...] = (PythonAdapter(), TypeScriptAdapter())
 
 # 대시보드·파일 트리에 표시할 언어 이름 (api-spec §4).
 LANGUAGE_BY_EXTENSION = {
@@ -41,6 +48,8 @@ def language_of(path: str) -> str | None:
 __all__ = [
     "LANGUAGE_BY_EXTENSION",
     "LanguageAdapter",
+    "ParseResult",
+    "ParsedImport",
     "ParsedReference",
     "ParsedSymbol",
     "get_adapter",

@@ -247,3 +247,76 @@ class ContextOut(BaseModel):
     evidence: list[CommitEvidenceOut | PrEvidenceOut]
     evidence_truncated: bool
     parent_module: ParentModuleOut | None
+
+
+# ---------------------------------------------------------------- 탐색기 (api-spec §4)
+
+
+class TreeFileOut(BaseModel):
+    """파일 노드. 디렉터리와 필드 구성이 달라 모델을 나눈다.
+
+    하나로 합쳐 children: null을 파일에 붙이면 프론트 목데이터와 어긋난다.
+    language는 파일에서만 null이 될 수 있다(미지원 언어). 그건 값이 있는 것이다.
+    """
+
+    path: str
+    name: str
+    type: Literal["file"] = "file"
+    language: str | None
+
+
+class TreeDirOut(BaseModel):
+    path: str
+    name: str
+    type: Literal["dir"] = "dir"
+    children: list["TreeDirOut | TreeFileOut"]
+
+
+class TreeOut(BaseModel):
+    root: list[TreeDirOut | TreeFileOut]
+
+
+class FileFunctionOut(BaseModel):
+    """뷰어에서 클릭할 수 있는 함수 범위."""
+
+    name: str
+    start_line: int
+    end_line: int
+
+
+class FileOut(BaseModel):
+    path: str
+    language: str | None
+    content: str
+    truncated: bool
+    functions: list[FileFunctionOut]
+
+
+class GraphRootOut(BaseModel):
+    """그래프의 기준 심볼. depth·direction이 없다 — 자기 자신이라서다."""
+
+    id: str
+    name: str
+    path: str
+    kind: str
+
+
+class GraphNodeOut(GraphRootOut):
+    depth: int
+    direction: Literal["caller", "callee"]
+    reference_count: int
+
+
+class GraphEdgeOut(BaseModel):
+    source: str
+    target: str
+    # 프론트가 색과 텍스트 두 가지로 함께 표기한다 (색맹·흑백 대응, api-spec §4).
+    type: Literal["call", "import", "constant", "inheritance"]
+
+
+class GraphOut(BaseModel):
+    root: GraphRootOut
+    nodes: list[GraphNodeOut]
+    edges: list[GraphEdgeOut]
+    total_nodes: int
+    truncated: bool

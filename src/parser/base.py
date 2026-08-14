@@ -41,6 +41,36 @@ class ParsedReference:
     ref_type: str  # call | import | constant | inheritance
     path: str
     line: int
+    # obj.method() 형태에서 앞에 붙은 이름. git_history.list_commits()의 git_history다.
+    # 그 이름이 import한 모듈이면 어느 파일 함수인지 확정된다 (이슈 #20).
+    receiver: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedImport:
+    """import 한 줄이 이 파일에 들여온 이름 하나 (이슈 #20).
+
+    module은 점 표기 모듈 경로다. 상대 import(`from .services import auth`)는
+    파일 위치를 기준으로 절대 경로로 바꿔 담는다. 그 모듈이 레포 안에 실제로
+    있는 파일인지는 파일 하나만 봐서 알 수 없으므로, 확인은 레포 전체를 아는
+    인덱싱 단계(parsing.py)가 한다. 외부 라이브러리는 거기서 걸러진다.
+
+    origin_name은 모듈 쪽의 원래 이름이다. `import x` 형태는 모듈만 들여오므로 None.
+    """
+
+    local_name: str  # 이 파일 안에서 쓰이는 이름 (as로 바꿨으면 바뀐 이름)
+    module: str
+    origin_name: str | None
+    line: int
+
+
+@dataclass(frozen=True)
+class ParseResult:
+    """파일 하나를 파싱한 결과."""
+
+    symbols: list[ParsedSymbol] = field(default_factory=list)
+    references: list[ParsedReference] = field(default_factory=list)
+    imports: list[ParsedImport] = field(default_factory=list)
 
 
 class LanguageAdapter:
@@ -48,7 +78,7 @@ class LanguageAdapter:
 
     extensions: tuple[str, ...] = ()
 
-    def parse(self, path: str, source: str) -> tuple[list[ParsedSymbol], list[ParsedReference]]:
+    def parse(self, path: str, source: str) -> ParseResult:
         raise NotImplementedError
 
 
