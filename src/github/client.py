@@ -5,6 +5,8 @@
 PR 본문과 리뷰 코멘트는 git에 없으므로 API로만 얻는다.
 """
 
+import base64
+
 import httpx
 
 from src.github.app_auth import GITHUB_API, GitHubAppError, get_installation_token
@@ -24,18 +26,45 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
-def _get(path: str, token: str, what: str, **params) -> dict | list:
+def _get(path: str, token: str, what: str, *, not_found_ok: bool = False, **params) -> dict | list | None:
     """GET 한 번. 네트워크 실패도 GitHubAppError로 통일한다.
 
     httpx는 타임아웃·연결 실패 시 응답을 주지 않고 예외를 던진다. 그대로 두면
     라우터의 `except GitHubAppError`를 지나쳐 502가 아니라 500이 나간다.
+
+    not_found_ok면 404를 예외 대신 None으로 돌려준다. PR 검사에서 base·head
+    어느 한쪽 리비전에 파일이 없는 것(신규·삭제 파일)은 정상 상태라 에러가 아니다.
     """
     try:
         response = httpx.get(f"{GITHUB_API}{path}", headers=_headers(token), params=params, timeout=_TIMEOUT)
     except httpx.HTTPError as error:
         raise GitHubAppError(f"{what} 조회 실패: {error}") from error
+    if not_found_ok and response.status_code == 404:
+        return None
     if response.is_error:
         raise GitHubAppError(f"{what} 조회 실패: {response.status_code} {response.text}")
+    return response.json()
+
+
+def _post(path: str, token: str, what: str, **kwargs) -> dict:
+    try:
+        response = httpx.post(f"{GITHUB_API}{path}", headers=_headers(token), timeout=_TIMEOUT, **kwargs)
+    except httpx.HTTPError as error:
+        raise GitHubAppError(f"{what} 실패: {error}") from error
+    if response.is_error:
+        raise GitHubAppError(f"{what} 실패: {response.status_code} {response.text}")
+    return response.json()
+
+
+def _patch(path: str, token: str, what: str, *, not_found_ok: bool = False, **kwargs) -> dict | None:
+    try:
+        response = httpx.patch(f"{GITHUB_API}{path}", headers=_headers(token), timeout=_TIMEOUT, **kwargs)
+    except httpx.HTTPError as error:
+        raise GitHubAppError(f"{what} 실패: {error}") from error
+    if not_found_ok and response.status_code == 404:
+        return None
+    if response.is_error:
+        raise GitHubAppError(f"{what} 실패: {response.status_code} {response.text}")
     return response.json()
 
 
@@ -95,3 +124,49 @@ def list_pr_comments(installation_id: int, full_name: str, number: int) -> list[
     review = _get_paginated(f"/repos/{full_name}/pulls/{number}/comments", token, "리뷰 코멘트")
     conversation = _get_paginated(f"/repos/{full_name}/issues/{number}/comments", token, "PR 코멘트")
     return [*review, *conversation]
+
+
+def list_pr_files(installation_id: int, full_name: str, number: int) -> list[dict]:
+    """PR에서 바뀐 파일 목록. filename·status·(이름이 바뀐 경우) previous_filename을 담는다.
+
+    이슈 #24 판별 함수의 ChangedFile.previous_path가 여기서 나온다.
+    """
+    token = get_installation_token(installation_id)
+    return _get_paginated(f"/repos/{full_name}/pulls/{number}/files", token, "PR 변경 파일")
+
+
+def get_file_content(installation_id: int, full_name: str, path: str, ref: str) -> str | None:
+    """특정 리비전의 파일 내용. 그 리비전에 파일이 없으면(신규·삭제) None.
+
+    Contents API는 1MB를 넘는 파일에는 content를 안 주고 download_url만 준다 —
+    그런 파일도 None으로 처리한다(PR 검사가 대상으로 삼기엔 너무 크다).
+    바이너리라 utf-8로 못 읽으면 파서 대상이 아니므로 마찬가지로 None.
+    """
+    token = get_installation_token(installation_id)
+    body = _get(f"/repos/{full_name}/contents/{path}", token, "파일 내용", not_found_ok=True, ref=ref)
+    if not isinstance(body, dict) or body.get("encoding") != "base64" or "content" not in body:
+        return None
+    try:
+        return base64.b64decode(body["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def create_issue_comment(installation_id: int, full_name: str, number: int, body: str) -> int:
+    """PR에 코멘트를 새로 단다. 재검사 시 수정할 수 있도록 만든 코멘트의 id를 돌려준다."""
+    token = get_installation_token(installation_id)
+    result = _post(f"/repos/{full_name}/issues/{number}/comments", token, "PR 코멘트 작성", json={"body": body})
+    return result["id"]
+
+
+def update_issue_comment(installation_id: int, full_name: str, comment_id: int, body: str) -> bool:
+    """기존 코멘트를 고쳐 쓴다. 코멘트가 이미 지워졌으면(수동 삭제 등) False를 돌려준다.
+
+    PR당 코멘트 1개 유지 규칙(api-spec §8) 때문에 재검사 때 새로 달지 않고 이 함수로 고친다.
+    """
+    token = get_installation_token(installation_id)
+    result = _patch(
+        f"/repos/{full_name}/issues/comments/{comment_id}", token, "PR 코멘트 수정",
+        not_found_ok=True, json={"body": body},
+    )
+    return result is not None
