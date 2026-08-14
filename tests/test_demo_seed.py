@@ -15,6 +15,7 @@ from src.demo import (
     get_or_create_demo_user,
     resolve_installation_id,
     seed_demo,
+    summary_blocker,
 )
 
 BASE = "/api/v1"
@@ -89,6 +90,28 @@ def test_연동된_조직에서_설치_ID를_가져온다(db_session):
     assert resolve_installation_id(db_session, "acme-payments", None) == 4321
 
 
+def test_데모_조직에_심어둔_값을_다시_쓴다(db_session):
+    """첫 실행이 이 값을 심으므로 두 번째 실행은 이 길로 온다."""
+    assert resolve_installation_id(db_session, "acme-payments", None, current=777) == 777
+
+
+def test_데모_조직은_후보에서_뺀다(db_session):
+    """자기 자신과 경쟁하면 후보가 둘이 되어 '어느 쪽인지 모르겠다'로 멈춘다."""
+    db_session.add(
+        Organization(
+            name="에이크미", slug="acme", github_account="acme-payments", github_installation_id=4321
+        )
+    )
+    db_session.add(
+        Organization(
+            name="데모", slug=DEMO_SLUG, github_account="acme-payments", github_installation_id=4321
+        )
+    )
+    db_session.commit()
+
+    assert resolve_installation_id(db_session, "acme-payments", None) == 4321
+
+
 def test_찾을_수_없으면_안내하고_멈춘다(db_session):
     """조용히 0을 쓰면 인덱싱이 인증 오류로 죽고 원인을 알기 어렵다."""
     with pytest.raises(SystemExit) as caught:
@@ -146,6 +169,27 @@ def test_두_번_돌려도_레포가_하나다(db_session, fake_indexing):
     assert len(fake_indexing) == 2
 
 
+def test_설치_ID_없이_다시_돌려도_동작한다(db_session, fake_indexing):
+    """파서가 바뀔 때마다 다시 돌리는 명령이다. 두 번째부터 막히면 안 된다.
+
+    첫 실행이 데모 조직에 설치 ID를 심는데, 그 조직이 다음 실행에서 후보로 섞이면
+    '어느 쪽인지 확정할 수 없다'며 멈춘다.
+    """
+    db_session.add(
+        Organization(
+            name="에이크미", slug="acme", github_account="acme-payments", github_installation_id=4321
+        )
+    )
+    db_session.commit()
+
+    seed_demo(db_session, DEMO_REPO)  # 설치 ID를 안 넘긴다 — 개인 조직에서 찾는다
+    seed_demo(db_session, DEMO_REPO)  # 이번엔 데모 조직에 심어둔 값을 쓴다
+
+    org = db_session.query(Organization).filter_by(slug=DEMO_SLUG).one()
+    assert org.github_installation_id == 4321
+    assert len(fake_indexing) == 2
+
+
 def test_실패한_레포도_다시_돌릴_수_있다(db_session, fake_indexing):
     """failed로 남은 상태에서 다시 시드하면 collecting부터 시작한다."""
     seed_demo(db_session, DEMO_REPO, installation_id=1234)
@@ -161,6 +205,31 @@ def test_실패한_레포도_다시_돌릴_수_있다(db_session, fake_indexing)
     # fake_indexing이 done으로 바꾸지 않으므로 collecting이 남는 것이 정상이다
     assert repo.indexing_status == "collecting"
     assert repo.progress_current is None
+
+
+# ── 요약이 안 만들어질 조건을 미리 알리는가 ────────────────────────────────
+
+
+def test_키가_없으면_미리_알린다(monkeypatch):
+    """다 돌린 뒤에 알면 몇 분을 다시 써야 한다."""
+    monkeypatch.setattr(demo_module.settings, "llm_api_key", "")
+
+    assert "LLM_API_KEY" in (summary_blocker() or "")
+
+
+def test_구현되지_않은_provider도_미리_알린다(monkeypatch):
+    """키가 있어도 provider 이름이 틀리면 요약이 전부 실패한다."""
+    monkeypatch.setattr(demo_module.settings, "llm_api_key", "sk-test")
+    monkeypatch.setattr(demo_module.settings, "llm_provider", "anthropic")
+
+    assert "anthropic" in (summary_blocker() or "")
+
+
+def test_제대로_설정되면_경고하지_않는다(monkeypatch):
+    monkeypatch.setattr(demo_module.settings, "llm_api_key", "sk-test")
+    monkeypatch.setattr(demo_module.settings, "llm_provider", "openai")
+
+    assert summary_blocker() is None
 
 
 # ── 데모 세션과 같은 조직을 보는가 ──────────────────────────────────────────
