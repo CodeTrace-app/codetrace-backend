@@ -175,6 +175,40 @@ def test_등록되지_않은_레포는_무시한다(client, db_session, monkeypa
     assert created == []
 
 
+# ---------------------------------------------------------------- <module> 표기 (이슈 #61)
+
+
+def test_import_영향은_module_대신_파일_단위_문장으로_표시된다(client, db_session, monkeypatch):
+    org, repo, _admin = _make_org_and_repo(db_session)
+    db_session.add(
+        Reference(
+            organization_id=org.id,
+            repo_id=repo.id,
+            source_ident="src/api/routes.py::<module>",
+            target_ident="src/auth.py::verify_token",
+            ref_type="import",
+            path="src/api/routes.py",
+            line=15,
+        )
+    )
+    db_session.commit()
+    created, _updated = _mock_pr_change(
+        monkeypatch, sources={"base123": _BASE_SOURCE, "head456": _HEAD_SOURCE}
+    )
+    payload = _pr_payload(installation_id=org.github_installation_id, full_name=repo.github_full_name)
+
+    res = _send(client, payload)
+
+    assert res.status_code == 204
+    row = db_session.query(PrWarning).filter_by(repo_id=repo.id, pr_number=12).one()
+    assert row.items[0].impacts[0].symbol_ident == "src/api/routes.py::<module>"  # 저장 형식은 그대로
+
+    body = created[0]["body"]
+    assert "<module>" not in body
+    assert "src/api/routes.py 파일이 import (15행)" in body
+    assert "`src/api/routes.py::<module>`" not in body
+
+
 # ---------------------------------------------------------------- 판별·저장·코멘트
 
 
