@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 
-from src.analysis import ChangedFile, Warning, detect_changes
+from src.analysis import ChangedFile, Impacted, Warning, detect_changes
 from src.auth import Ctx, current_user, get_db
 from src.config import settings
 from src.db.models import Organization, PrWarning, PrWarningImpact, PrWarningItem, Repo
@@ -28,6 +28,7 @@ from src.github.client import (
     list_pr_files,
     update_issue_comment,
 )
+from src.indexing.parsing import MODULE_IDENT
 from src.parser import get_adapter
 from src.schemas import ImpactedOut, PrWarningListOut, PrWarningOut, WarningOut
 
@@ -152,6 +153,19 @@ def _explorer_link(repo_id: int, symbol: str) -> str:
     return f"{settings.frontend_url}/explorer?repo={repo_id}&fn={quote(symbol, safe='')}&tab=impact"
 
 
+def _impacted_line(impacted: Impacted) -> str:
+    """영향받는 위치 한 줄. import는 함수가 아니라 파일 전체를 가리킨다 (이슈 #61).
+
+    출발 심볼이 없는 import는 내부적으로 "파일경로::<module>"로 저장하는데,
+    이 내부 표시를 그대로 보여주면 신입 개발자가 함수 이름으로 오해한다.
+    저장 형식은 그대로 두고 표시할 때만 파일 단위 문장으로 바꾼다. 탐색기는
+    "<module>"을 열 수 없는 대상이라 함수 링크도 걸지 않는다.
+    """
+    if impacted.type == "import" and impacted.symbol.endswith(MODULE_IDENT):
+        return f"- {impacted.path} 파일이 import ({impacted.line}행)"
+    return f"- `{impacted.symbol}` ({impacted.path}:{impacted.line}, {impacted.type})"
+
+
 def _build_comment_body(repo_id: int, warnings: list[Warning], head_sha: str) -> str:
     short_sha = head_sha[:7]
     if not warnings:
@@ -169,7 +183,7 @@ def _build_comment_body(repo_id: int, warnings: list[Warning], head_sha: str) ->
             lines.append("")
             lines.append(f"영향받는 위치 {len(warning.impacted)}곳:")
             for impacted in warning.impacted:
-                lines.append(f"- `{impacted.symbol}` ({impacted.path}:{impacted.line}, {impacted.type})")
+                lines.append(_impacted_line(impacted))
         lines.append("")
         lines.append("---")
         lines.append("")
