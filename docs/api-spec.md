@@ -202,7 +202,7 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
       "default_branch": "main",
       "language": "Python",
       "indexing_status": "parsing",
-      "progress": { "current": 142, "total": 218 },
+      "progress": { "current": 142, "total": 218, "label": "파일 파싱" },
       "last_indexed_at": null,
       "stats": { "files": 87, "functions": 342, "commits": 418, "prs": 96 }
     },
@@ -224,8 +224,11 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
 - `summary`는 대시보드 상단 카드 3개(연동 계정 / 인덱싱된 레포 / 수집된 커밋)에 쓴다.
 - `indexing_status`: `"collecting"`(수집 중) → `"parsing"`(파싱 중) → `"done"`(완료) | `"failed"`
 - `progress`: 진행 중일 때만 값이 있고 `done`·`failed`면 `null`.
-  화면 표기는 `collecting`이면 "수집 중 · 커밋 142 / 218", `parsing`이면 "파싱 · 65%"
-  (퍼센트는 프론트가 `current/total`로 계산한다)
+  `label`은 지금 무엇을 세고 있는지를 알려준다 — 커밋 수집 · PR 수집 · 파일 파싱 · 근거 연결 · 배경 요약.
+  **한 상태 안에 단계가 여럿이다.** `collecting`에 커밋·PR 수집이, `parsing`에 파일 파싱·근거 연결·배경
+  요약이 들어 있고, 단계가 바뀔 때마다 `current`가 0으로 돌아간다. 화면이 `label` 없이 퍼센트만 보여주면
+  100%에서 0%로 되돌아가는 것처럼 보이므로 반드시 함께 표기한다.
+  표기 예: "파일 파싱 · 65%", "근거 연결 · 12 / 40"
 - `language`: 레포의 대표 언어. 표시용 문자열이며 지원 언어 판별과는 무관하다.
 - `failed`면 카드에 "재인덱싱" 버튼만 노출 (에러 화면을 띄우지 않는다)
 - `stats`는 `done` 이전엔 수집된 만큼만 (0일 수 있음)
