@@ -360,6 +360,7 @@ def parse_repo(db: Session, repo: Repo, repo_dir: Path) -> tuple[int, int]:
     files = list(_iter_files(repo_dir))
     repo.progress_current = 0
     repo.progress_total = len(files)
+    repo.progress_label = "파일 파싱"
     db.commit()
 
     all_symbols: list[ParsedSymbol] = []
