@@ -134,6 +134,9 @@ class RepoCreateRequest(BaseModel):
 class RepoProgressOut(BaseModel):
     current: int
     total: int
+    # 지금 무엇을 세고 있는지. 한 상태 안에 단계가 여럿이라(파싱 = 파일 → 근거 → 요약)
+    # 이름이 없으면 진행률이 100%에서 0%로 되돌아가는 것처럼 보인다.
+    label: str | None = None
 
 
 class RepoStatsOut(BaseModel):
@@ -167,7 +170,11 @@ class RepoOut(BaseModel):
         in_progress = repo.indexing_status in ("collecting", "parsing")
         progress = None
         if in_progress and repo.progress_total is not None:
-            progress = RepoProgressOut(current=repo.progress_current or 0, total=repo.progress_total)
+            progress = RepoProgressOut(
+                current=repo.progress_current or 0,
+                total=repo.progress_total,
+                label=repo.progress_label,
+            )
         return cls(
             id=repo.id,
             name=repo.name,

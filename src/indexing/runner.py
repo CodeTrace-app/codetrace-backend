@@ -34,6 +34,7 @@ def reset_stuck_indexing() -> int:
             repo.indexing_status = "failed"
             repo.progress_current = None
             repo.progress_total = None
+            repo.progress_label = None
         if stuck:
             logger.warning("중단된 인덱싱 %d건을 failed로 되돌렸습니다", len(stuck))
             db.commit()
@@ -80,6 +81,7 @@ def run_indexing(repo_id: int, organization_id: int, installation_id: int) -> No
             repo.last_indexed_at = datetime.now(timezone.utc)
             repo.progress_current = None
             repo.progress_total = None
+            repo.progress_label = None
             db.commit()
         except Exception:
             # 실패해도 카드가 "수집 중"에 멈춰 있으면 안 된다.
@@ -105,6 +107,7 @@ def _mark_failed(db, repo_id: int) -> None:
         repo.indexing_status = "failed"
         repo.progress_current = None
         repo.progress_total = None
+        repo.progress_label = None
         db.commit()
     except Exception:
         logger.exception("실패 상태 기록마저 실패: repo_id=%s", repo_id)

@@ -200,3 +200,41 @@ def test_대시보드_요약이_레포_통계를_합산한다(client, db_session
     assert body["summary"]["commit_count"] == 15
     # PR 개수(2)가 아니라 코멘트 총합(3+4)이어야 한다.
     assert body["summary"]["review_comment_count"] == 7
+
+
+def _repo_in_progress(db_session, org, *, status, label):
+    repo = Repo(
+        organization_id=org.id,
+        name="a",
+        github_full_name="acme/a",
+        indexing_status=status,
+        progress_current=12,
+        progress_total=40,
+        progress_label=label,
+    )
+    db_session.add(repo)
+    db_session.commit()
+    return repo
+
+
+def test_진행률에_단계_이름이_실린다(client, db_session):
+    """한 상태 안에 단계가 여럿이라 이름이 없으면 100%에서 0%로 되돌아가 보인다.
+
+    파싱 상태에는 파일 파싱·근거 연결·배경 요약 셋이 들어 있다.
+    """
+    org, admin = _make_org_and_admin(db_session, installation_id=1, account="acme")
+    _repo_in_progress(db_session, org, status="parsing", label="근거 연결")
+
+    body = client.get("/api/v1/repos", headers=_auth(admin)).json()
+
+    assert body["repos"][0]["progress"] == {"current": 12, "total": 40, "label": "근거 연결"}
+
+
+def test_완료되면_진행률이_통째로_사라진다(client, db_session):
+    """done인데 값이 남아 있으면 완료된 카드에 진행바가 뜬다."""
+    org, admin = _make_org_and_admin(db_session, installation_id=1, account="acme")
+    _repo_in_progress(db_session, org, status="done", label="배경 요약")
+
+    body = client.get("/api/v1/repos", headers=_auth(admin)).json()
+
+    assert body["repos"][0]["progress"] is None

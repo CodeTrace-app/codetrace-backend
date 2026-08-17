@@ -123,6 +123,9 @@ class Repo(OrgScopedMixin, TimestampMixin, Base):
     # 진행 중(collecting/parsing)일 때만 값이 있다. done·failed면 둘 다 null.
     progress_current: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 진행률이 무엇을 세고 있는지. 한 상태 안에 단계가 여럿이라(파싱 = 파일 → 근거 → 요약)
+    # 이름이 없으면 100%에서 0%로 되돌아가는 것처럼 보인다.
+    progress_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     files_count: Mapped[int] = mapped_column(Integer, default=0)
     functions_count: Mapped[int] = mapped_column(Integer, default=0)

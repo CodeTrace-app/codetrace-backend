@@ -85,6 +85,7 @@ def _save_commits(db: Session, repo: Repo, commits: list[git_history.CommitInfo]
 
     repo.progress_current = 0
     repo.progress_total = len(commits)
+    repo.progress_label = "커밋 수집"
     db.commit()
 
     saved: dict[str, Commit] = {}
@@ -132,6 +133,7 @@ def _save_pull_requests(
     payloads = list_pull_requests(installation_id, repo.github_full_name)
     repo.progress_current = 0
     repo.progress_total = len(payloads)
+    repo.progress_label = "PR 수집"
     db.commit()
 
     saved: dict[int, PullRequest] = {}
@@ -220,6 +222,7 @@ def _link_symbol_evidence(
 
     repo.progress_current = 0
     repo.progress_total = len(symbols)
+    repo.progress_label = "근거 연결"
     db.commit()
 
     linked = 0
@@ -285,6 +288,7 @@ def generate_repo_summaries(db: Session, repo: Repo) -> int:
     repo.indexing_status = "parsing"
     repo.progress_current = 0
     repo.progress_total = len(symbols)
+    repo.progress_label = "배경 요약"
     db.commit()
 
     generated = 0
