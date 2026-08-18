@@ -9,12 +9,18 @@
 
 services:
   db:
-    image: postgres:16-alpine
+    # pg_dump는 자기보다 높은 버전의 서버를 덤프하지 못한다. 옮겨올 DB보다
+    # 낮은 버전을 쓰면 데이터 이전 자체가 막히므로 최신 메이저를 따라간다.
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-codetrace}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?deploy/.env에 POSTGRES_PASSWORD를 넣으세요}
       POSTGRES_DB: ${POSTGRES_DB:-codetrace}
+      # 18 이미지에는 /var/lib/postgresql/data 가 없다. 그대로 두면 볼륨이 root 소유
+      # 빈 폴더로 생기고 postgres 사용자가 초기화하지 못해 컨테이너가 재시작을 반복한다.
+      # 엔트리포인트가 직접 만드는 하위 폴더를 가리켜 소유권을 맞춘다.
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
