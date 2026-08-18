@@ -109,3 +109,37 @@ def test_진짜_실패는_다섯_번이면_중단한다(db_session, repo_with_sy
 
     assert made == 0
     assert len(calls) == 5, "연속 실패 한도에서 멈춰야 한다"
+
+
+def test_레이트리밋은_generate_summary를_통과해_올라온다(db_session, repo_with_symbols, monkeypatch):
+    """LLMRateLimited는 LLMUnavailable의 자식이라 넓은 except에 먼저 잡힌다.
+
+    generate_summary가 이것을 None으로 삼키면 호출자의 대기 로직에 닿지 않아,
+    기다렸다 재시도하는 장치가 통째로 무력해진다. 실제로 그래서 요약이
+    2,023개 중 29개에서 멈췄다.
+    """
+    from src.llm import summarizer
+
+    def limited(symbol, snippet, items):
+        raise LLMRateLimited(2.0)
+
+    monkeypatch.setattr(summarizer, "summarize", limited)
+    symbol = db_session.query(Symbol).first()
+    repo = repo_with_symbols
+
+    with pytest.raises(LLMRateLimited):
+        summarizer.generate_summary(db_session, repo, symbol, "")
+
+
+def test_다른_LLM_실패는_그대로_삼킨다(db_session, repo_with_symbols, monkeypatch):
+    """키가 없거나 서버가 죽은 것은 기다려도 안 풀린다. 인덱싱을 멈추지 않는다."""
+    from src.llm import summarizer
+    from src.llm.provider import LLMUnavailable
+
+    def broken(symbol, snippet, items):
+        raise LLMUnavailable("LLM 응답 오류: 401")
+
+    monkeypatch.setattr(summarizer, "summarize", broken)
+    symbol = db_session.query(Symbol).first()
+
+    assert summarizer.generate_summary(db_session, repo_with_symbols, symbol, "") is None

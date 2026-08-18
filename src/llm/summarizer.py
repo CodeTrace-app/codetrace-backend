@@ -21,7 +21,7 @@ from src.db.models import Commit, PullRequest, Repo, Symbol, SymbolEvidence, Sym
 from src.db.query import query
 from src.llm import complete
 from src.llm.prompts import COMMIT_ITEM, PR_ITEM, RETRY_SUFFIX, SYSTEM_PROMPT, USER_TEMPLATE
-from src.llm.provider import LLMUnavailable
+from src.llm.provider import LLMRateLimited, LLMUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +494,10 @@ def generate_summary(db: Session, repo: Repo, symbol: Symbol, snippet: str = "")
     items = load_evidence(db, repo, [symbol.ident])
     try:
         result = summarize(symbol, snippet, items)
+    except LLMRateLimited:
+        # 레이트리밋은 장애가 아니라 대기 신호다. 여기서 None으로 삼키면 호출자가
+        # 실패로 세어 다섯 번 만에 인덱싱을 멈춘다. 기다렸다 다시 시도하도록 올려보낸다.
+        raise
     except LLMUnavailable as error:
         # 키가 없거나 OpenAI가 죽어도 인덱싱 전체를 실패시키지 않는다.
         logger.warning("요약 생략 (%s): %s", symbol.ident, error)
