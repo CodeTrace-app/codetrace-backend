@@ -8,6 +8,7 @@
 """
 
 import logging
+import time
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +22,7 @@ from src.db.query import query
 from src.github import git_history
 from src.github.app_auth import get_installation_token
 from src.github.client import get_repo, list_pr_comments, list_pr_commits, list_pull_requests
+from src.llm.provider import LLMRateLimited
 from src.llm.summarizer import SNIPPET_MAX_CHARS, SNIPPET_MAX_LINES, generate_summary
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,10 @@ logger = logging.getLogger(__name__)
 # 요약이 이만큼 연속으로 실패하면 나머지 심볼은 포기한다. 키가 없거나 OpenAI가 죽은 상황에서
 # 심볼마다 최대 60초씩 기다리며 끝까지 도는 걸 막는다.
 _MAX_CONSECUTIVE_SUMMARY_FAILURES = 5
+
+# 레이트리밋은 장애가 아니라 대기 신호다. 실패로 세지 않고 기다렸다 같은 심볼을
+# 다시 시도한다. 다만 무한정 기다리면 인덱싱이 끝나지 않으므로 심볼당 상한을 둔다.
+_MAX_RATE_LIMIT_WAITS = 6
 
 # "Merge pull request #12 from ..." — 머지 커밋이 어느 PR에서 왔는지 알려준다.
 _MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b")
@@ -294,25 +300,43 @@ def generate_repo_summaries(db: Session, repo: Repo) -> int:
     generated = 0
     consecutive_failures = 0
     snippet_cache: dict[str, str | None] = {}
+    index = 0
     for index, symbol in enumerate(symbols, start=1):
-        try:
-            # 근거가 방금 새로 만들어졌으므로 옛 요약은 그 근거를 인용한 게 아니다.
-            # 심볼 단위로 지우고 다시 만든다. 실패하면 그 심볼만 요약이 비고,
-            # API는 "근거는 있는데 요약은 아직 없음"으로 정직하게 답한다.
-            _delete_summary(db, repo, symbol.ident)
-            snippet = _read_snippet(db, repo, symbol, snippet_cache)
-            if generate_summary(db, repo, symbol, snippet) is not None:
-                generated += 1
-                consecutive_failures = 0
-            else:
+        # 레이트리밋을 만나면 기다렸다 같은 심볼을 다시 시도한다. 그냥 넘기면
+        # 심볼만 소진하고 요약은 거의 안 생긴다 (실제로 2,023개 중 37개에서 멈췄다).
+        for wait_count in range(_MAX_RATE_LIMIT_WAITS + 1):
+            try:
+                # 근거가 방금 새로 만들어졌으므로 옛 요약은 그 근거를 인용한 게 아니다.
+                # 심볼 단위로 지우고 다시 만든다. 실패하면 그 심볼만 요약이 비고,
+                # API는 "근거는 있는데 요약은 아직 없음"으로 정직하게 답한다.
+                _delete_summary(db, repo, symbol.ident)
+                snippet = _read_snippet(db, repo, symbol, snippet_cache)
+                if generate_summary(db, repo, symbol, snippet) is not None:
+                    generated += 1
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                break
+            except LLMRateLimited as limited:
+                db.rollback()
+                if wait_count >= _MAX_RATE_LIMIT_WAITS:
+                    logger.warning(
+                        "레이트리밋이 %d번 이어져 이 심볼은 건너뜁니다: %s",
+                        wait_count,
+                        symbol.ident,
+                    )
+                    consecutive_failures += 1
+                    break
+                logger.info("레이트리밋, %.0f초 대기 (%d/%d번째 심볼)", limited.wait, index, len(symbols))
+                time.sleep(limited.wait)
+            except Exception:
+                logger.exception("요약 생성 실패, 건너뜀: %s", symbol.ident)
+                db.rollback()
                 consecutive_failures += 1
-        except Exception:
-            logger.exception("요약 생성 실패, 건너뜀: %s", symbol.ident)
-            db.rollback()
-            consecutive_failures += 1
+                break
 
         # 키가 잘못됐거나 OpenAI가 죽었으면 심볼 수만큼 계속 두드려봐야 소용없다.
-        # 호출마다 최대 60초라 심볼이 많으면 인덱싱이 몇 시간씩 잡힌다.
+        # 레이트리밋은 여기 세지 않는다 — 기다리면 풀리는 것이라 장애가 아니다.
         if consecutive_failures >= _MAX_CONSECUTIVE_SUMMARY_FAILURES:
             logger.warning(
                 "요약 생성이 %d회 연속 실패해 중단합니다 (%d/%d번째 심볼)",
