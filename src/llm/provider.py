@@ -28,6 +28,18 @@ class LLMUnavailable(Exception):
     """LLM 호출 실패. 호출자는 요약을 비우고 넘어간다 (인덱싱을 중단시키지 않는다)."""
 
 
+class LLMRateLimited(LLMUnavailable):
+    """레이트리밋으로 실패했다. 장애가 아니라 대기 신호다.
+
+    호출자는 이것을 실패로 세지 않는다. 세어버리면 심볼이 조금만 많아도
+    연속 실패 한도에 걸려 레포 대부분이 요약 없이 끝난다.
+    """
+
+    def __init__(self, wait: float):
+        self.wait = wait
+        super().__init__(f"레이트리밋. {wait:.0f}초 뒤 다시 시도할 수 있습니다")
+
+
 def _retry_after(response: httpx.Response) -> float:
     """서버가 알려준 대기 시간. 없으면 기본값을 쓴다.
 
@@ -86,6 +98,10 @@ class OpenAIProvider(LLMProvider):
                 continue
 
             if response.is_error:
+                # 재시도를 다 쓰고도 429면 장애가 아니라 아직 순서가 아닌 것이다.
+                # 호출자가 기다렸다 같은 심볼을 다시 시도할 수 있게 구분해 던진다.
+                if response.status_code == 429:
+                    raise LLMRateLimited(_retry_after(response))
                 # 본문에 키가 섞여 나오지는 않지만 길어서 앞부분만 남긴다.
                 raise LLMUnavailable(f"LLM 응답 오류: {response.status_code} {response.text[:200]}")
 
@@ -94,7 +110,7 @@ class OpenAIProvider(LLMProvider):
             except (KeyError, IndexError, ValueError) as error:
                 raise LLMUnavailable(f"LLM 응답 형식이 예상과 다릅니다: {error}") from error
 
-        raise LLMUnavailable("LLM 재시도 한도를 넘겼습니다")
+        raise LLMUnavailable("LLM 재시도 한도를 넘겼습니다")  # 도달하지 않는다
 
 
 class UnconfiguredProvider(LLMProvider):
