@@ -1,0 +1,15 @@
+# Let's Encrypt 인증서를 자동으로 받아 갱신한다. 80·443 포트가 열려 있어야 한다.
+#
+# DOMAIN 에는 도메인이나 sslip.io 주소를 넣는다.
+#   도메인이 있으면      api.example.com
+#   없으면 공인 IP로     203-0-113-5.sslip.io   (점을 하이픈으로 바꾼 IP)
+
+{$DOMAIN} {
+	encode gzip
+
+	# 헬스체크는 로그를 남기지 않는다. UptimeRobot이 1분마다 두드린다.
+	@health path /health
+	log_skip @health
+
+	reverse_proxy api:8000
+}

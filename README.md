@@ -114,6 +114,36 @@ python -m src.demo
 
 파서가 바뀌면 저장된 인덱스가 옛 결과이므로 이 명령을 다시 돌린다.
 
+## 🖥️ 자체 서버에 올리기
+
+PaaS에 묶여 있지 않다. 도커만 있으면 어디서든 같은 구성으로 뜬다.
+
+```bash
+git clone https://github.com/CodeTrace-app/codetrace-backend.git
+cd codetrace-backend/deploy
+cp .env.example .env        # 값을 채운다
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+앱·PostgreSQL·리버스 프록시 세 컨테이너가 뜬다. 프록시(Caddy)가 인증서를 자동으로
+받아 갱신하므로 별도 설정이 없다.
+
+> ⚠️ **HTTPS는 선택이 아니다.**
+> 프론트가 HTTPS(Vercel)라 백엔드가 HTTP면 브라우저가 요청을 막는다. 화면은 뜨는데
+> 데이터가 하나도 안 나오는 상태가 된다.
+>
+> 도메인이 없으면 `deploy/.env`의 `DOMAIN`에 sslip.io 주소를 넣는다. 공인 IP의 점을
+> 하이픈으로 바꾼 것이다 — `203.0.113.5` → `203-0-113-5.sslip.io`. 인증서가 정상 발급된다.
+
+서버에서 열어야 하는 포트는 **80·443** 두 개다. DB는 컨테이너 안에서만 접근하므로
+5432를 밖으로 열지 않는다.
+
+첫 기동 후 데모 데이터를 넣는다.
+
+```bash
+docker compose -f docker-compose.prod.yml exec api python -m src.demo
+```
+
 ## 🔐 API 만들 때 (백엔드 공통 규칙)
 
 조직 ID를 요청 본문이나 쿼리로 받지 않는다. 항상 인증 의존성에서 가져온다.
