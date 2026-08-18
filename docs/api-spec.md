@@ -452,6 +452,7 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
   "items": [
     {
       "id": 8,
+      "repo_id": 1,
       "repo": "acme-payment-service",
       "pr_number": 132,
       "pr_title": "결제 타임아웃 설정 변경",
@@ -477,6 +478,7 @@ fetch로 호출하는 API가 아니므로 Authorization 헤더가 없다 — `in
 }
 ```
 
+- `repo_id`: 탐색기 링크(§7의 `?repo=`)에 쓴다. 레포 이름만으로는 링크를 만들 수 없다.
 - `change_type`: `"signature_changed"` | `"deleted"` | `"renamed"` | `"constant_changed"`
   (경고 대상은 이 4가지뿐. 내부 로직·주석·타입 힌트·기본값 변경은 경고하지 않는다)
 - `impacted[].type`: 연결 유형 4가지와 동일

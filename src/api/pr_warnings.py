@@ -318,6 +318,7 @@ def list_pr_warnings(
     items = [
         PrWarningOut(
             id=row.id,
+            repo_id=row.repo_id,
             repo=repo_names.get(row.repo_id, ""),
             pr_number=row.pr_number,
             pr_title=row.pr_title,

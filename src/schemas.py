@@ -356,6 +356,8 @@ class PrWarningOut(BaseModel):
     """PR 경고 이력 한 건. §5 응답의 items[] 원소."""
 
     id: int
+    # 탐색기 링크(?repo=)가 쓰는 값. 이름만으로는 링크를 만들 수 없다.
+    repo_id: int
     repo: str
     pr_number: int
     pr_title: str
