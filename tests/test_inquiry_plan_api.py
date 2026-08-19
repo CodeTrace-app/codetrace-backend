@@ -79,9 +79,10 @@ def test_토큰_없이는_조회할_수_없다(client):
     assert client.get(f"{BASE}/admin/plan").status_code == 401
 
 
-def test_데모_세션은_조회할_수_없다(client):
+def test_데모_세션도_조회할_수_있다(client):
+    """데모 사용자는 admin이다. 읽기 전용이라도 조회는 막지 않는다."""
     token = client.post(f"{BASE}/auth/demo").json()["access_token"]
-    assert client.get(f"{BASE}/admin/plan", headers=auth(token)).status_code == 403
+    assert client.get(f"{BASE}/admin/plan", headers=auth(token)).status_code == 200
 
 
 def test_조직이_없는_사용자는_조회할_수_없다(client):
