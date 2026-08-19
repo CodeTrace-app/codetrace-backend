@@ -51,7 +51,11 @@ def get_or_create_demo_org(db: Session) -> Organization:
 def get_or_create_demo_user(db: Session, org: Organization) -> User:
     """데모 사용자를 찾거나 만든다.
 
-    role은 member다. 관리자 설정 화면이 데모 세션에 열리지 않게 하는 기준이다.
+    role은 admin이다. 9개 화면 중 관리자 설정만 데모에서 보이지 않으면, 그런 화면이
+    있다는 것조차 알 수 없다. 조직 격리는 role과 무관하게 organization_id로 거르므로
+    이 계정으로도 데모 조직 밖은 보이지 않는다.
+
+    쓰기는 여전히 전부 막힌다 — 세션이 읽기 전용이라 writable_user에서 걸린다.
     """
     user = db.scalar(select(User).where(User.email == DEMO_EMAIL))
     if user is None:
@@ -61,7 +65,7 @@ def get_or_create_demo_user(db: Session, org: Organization) -> User:
             # 이 계정으로는 로그인할 수 없다. 데모 세션 발급으로만 쓰인다.
             password_hash=hash_password(secrets.token_urlsafe(32)),
             name=DEMO_USER_NAME,
-            role="member",
+            role="admin",
         )
         db.add(user)
         db.flush()

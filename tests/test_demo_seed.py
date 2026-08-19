@@ -55,12 +55,15 @@ def test_데모_조직은_데모로_표시된다(db_session):
     assert org.repo_limit > 3
 
 
-def test_데모_사용자는_member다(db_session):
-    """admin이면 관리자 설정 화면이 데모 세션에 열린다."""
+def test_데모_사용자는_admin이다(db_session):
+    """관리자 설정도 데모에서 보여준다. 안 보이면 그런 화면이 있다는 것조차 알 수 없다.
+
+    쓰기가 열리는 것은 아니다 — 세션이 읽기 전용이라 writable_user에서 막힌다.
+    """
     org = get_or_create_demo_org(db_session)
     user = get_or_create_demo_user(db_session, org)
 
-    assert user.role == "member"
+    assert user.role == "admin"
     assert user.organization_id == org.id
 
 
@@ -272,9 +275,21 @@ def test_데모_세션은_레포를_추가할_수_없다(client, db_session, fak
     assert reindexed.status_code == 403
 
 
-def test_데모_세션은_관리자_설정을_볼_수_없다(client, db_session, fake_indexing):
+def test_데모_세션도_관리자_설정을_본다(client, db_session, fake_indexing):
+    """조회만 열린다. 조직 격리는 role과 무관하게 organization_id로 걸린다."""
     seed_demo(db_session, DEMO_REPO, installation_id=1234)
     session = client.post(f"{BASE}/auth/demo").json()
     headers = {"Authorization": f"Bearer {session['access_token']}"}
 
-    assert client.get(f"{BASE}/admin/plan", headers=headers).status_code == 403
+    assert client.get(f"{BASE}/admin/plan", headers=headers).status_code == 200
+    assert client.get(f"{BASE}/admin/query-logs", headers=headers).status_code == 200
+
+
+def test_데모_세션은_관리자여도_쓰기는_막힌다(client, db_session, fake_indexing):
+    """관리자 화면을 열어준 것이 쓰기까지 열어준 것은 아니다."""
+    seed_demo(db_session, DEMO_REPO, installation_id=1234)
+    session = client.post(f"{BASE}/auth/demo").json()
+    headers = {"Authorization": f"Bearer {session['access_token']}"}
+
+    res = client.post(f"{BASE}/repos", json={"github_full_name": "acme/other"}, headers=headers)
+    assert res.status_code == 403
