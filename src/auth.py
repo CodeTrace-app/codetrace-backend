@@ -134,8 +134,17 @@ def writable_user(ctx: Ctx = Depends(current_user)) -> Ctx:
     return ctx
 
 
-def admin_user(ctx: Ctx = Depends(writable_user)) -> Ctx:
-    """조직 관리자 전용. 질의 이력·요금제 조회 등에 쓴다."""
+def admin_user(ctx: Ctx = Depends(current_user)) -> Ctx:
+    """조직 관리자 전용. 질의 이력·요금제 조회 등에 쓴다.
+
+    쓰기 여부는 따지지 않는다. 관리자 화면은 조회만 하는데 writable_user를 거치면
+    읽기 전용 세션이 GET에서 막혀, 화면이 아예 성립하지 않는다.
+
+    조직 격리는 그대로다 — query() 래퍼가 ctx.organization_id로 거르므로
+    관리자라도 자기 조직 밖은 보지 못한다. 여기서 푸는 것은 역할 규칙뿐이다.
+
+    관리자 전용 쓰기 API를 나중에 만든다면 writable_user를 함께 걸어야 한다.
+    """
     if not ctx.is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "조직 관리자만 사용할 수 있습니다")
     return ctx

@@ -82,14 +82,15 @@ def test_member는_조회할_수_없다(client, db_session):
     assert res.status_code == 403
 
 
-def test_데모_세션은_조회할_수_없다(client, db_session):
+def test_읽기_전용_관리자도_조회할_수_있다(client, db_session):
+    """조회에는 쓰기 권한을 요구하지 않는다. 역할과 조직 격리만 본다."""
     org = _make_org(db_session)
     admin = _make_user(db_session, org, role="admin")
     db_session.commit()
 
     res = client.get(f"{BASE}/admin/query-logs", headers=_auth(admin, read_only=True))
 
-    assert res.status_code == 403
+    assert res.status_code == 200
 
 
 def test_토큰_없이는_조회할_수_없다(client):
